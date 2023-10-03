@@ -7,12 +7,13 @@ from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse, parse_qs
 import pytz
 # Connect to SQLite database
-conn = sqlite3.connect('news.db')
+conn = sqlite3.connect("./scrapying/news.db")
 cursor = conn.cursor()
 
 # Define the base URL and the target URL
 BASE_URL = "https://www.setn.com/"
 TARGET_URL = "https://www.setn.com/ViewAll.aspx?PageGroupID=6"
+NEWS_NAME = "setn"
 
 
 def extract_author(text):
@@ -126,8 +127,8 @@ async def main():
             cursor.execute('SELECT id FROM news WHERE id = ?', (news_id,))
             if cursor.fetchone() is None:
                 title, author = extract_details_from_html(html_content)
-                cursor.execute('INSERT INTO news (id, author, title, url, publish_time) VALUES (?, ?, ?, ?, ?)',
-                               (news_id, author, title, link, publish_time))
+                cursor.execute('INSERT INTO news (id, news_name, author, title, url, publish_time) VALUES (?, ?, ?, ?, ?, ?)',
+                               (news_id, NEWS_NAME, author, title, link, publish_time))
                 conn.commit()
 
         page += 1  # Go to the next page

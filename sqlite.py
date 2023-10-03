@@ -7,6 +7,7 @@ cursor = conn.cursor()
 cursor.execute('''
 CREATE TABLE IF NOT EXISTS news (
     id TEXT PRIMARY KEY,
+    news_name TEXT,
     author TEXT,
     title TEXT,
     url TEXT,
