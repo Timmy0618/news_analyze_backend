@@ -1,25 +1,31 @@
 from datetime import datetime, timedelta
-import re
+import json
 import asyncio
 import aiohttp
 import sqlite3
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlparse, parse_qs
+from urllib.parse import urljoin, quote
 import pytz
+import traceback
+import sys
 # Connect to SQLite database
 conn = sqlite3.connect("./scrapying/news.db")
 cursor = conn.cursor()
 
 # Define the base URL and the target URL
-BASE_URL = "https://news.tvbs.com.tw/"
+BASE_URL = "https://news.tvbs.com.tw"
 TARGET_URL = "https://news.tvbs.com.tw/politics"
 NEWS_NAME = "tvbs"
 
 
-async def fetch(url, session):
+async def fetch(url, session, params=None):
     """Fetch a URL using aiohttp."""
-    async with session.get(url) as response:
-        return await response.text()
+    if params is None:
+        async with session.get(url) as response:
+            return await response.text()
+    else:
+        async with session.get(url, params=params) as response:
+            return await response.text()
 
 
 async def fetch_all(urls):
@@ -35,11 +41,60 @@ def get_newest_href(html_content):
     # 提取包含 "/politics/" 的所有 href 值
     href_values = [a['href'] for a in soup.find_all(
         'a', href=True) if "/politics/" in a['href']]
-    print(href_values)
-    # 從 href 值中提取 ID 並找出最大的 ID
-    max_id = max([int(href.split('/')[-1]) for href in href_values])
 
-    return max_id
+    return href_values
+
+
+def extract_payload(html_content):
+    soup = BeautifulSoup(html_content, 'html.parser')
+
+    # Find all input elements inside the container with class "politics"
+    inputs = soup.select('div.container.politics input')
+
+    # Extract the 'id' and 'value' attributes for each input element
+    payload = {input_element['id']: input_element['value']
+               for input_element in inputs if input_element.has_attr('value')}
+
+    return payload
+
+
+def transform_payload(payload):
+    """Transform the payload into the desired format."""
+    transformed = {
+        'news_id': payload['last_news_id'],
+        'page': payload['breaking_news_page'],
+        'date': payload['last_news_review_date'],
+        'cate': payload['breaking_news_cate'],
+        'get_num': payload['breaking_news_get_num']
+    }
+    return transformed
+
+
+def create_payload_from_new_page(new_page_data):
+    """Creates a new payload using data from the new page."""
+    payload = {
+        'news_id': new_page_data['last_news_id'],
+        'date': new_page_data['last_news_review_date'],
+        # Default to '2' if not found
+        'page': new_page_data.get('page'),
+        # Default to '7' if not found
+        'cate': new_page_data.get('cate'),
+        # Default to '90' if not found
+        'get_num': new_page_data.get('get_num')
+    }
+    return payload
+
+
+async def get_new_page_html(payload):
+
+    # Construct the GET request URL using the payload
+    get_url = "https://news.tvbs.com.tw/news/get_breaking_news_other_cate?"
+
+    async with aiohttp.ClientSession() as session:
+        response_text = await fetch(get_url, session, payload)
+
+    # Fetch the GET request
+    return json.loads(response_text)
 
 
 def get_news_links_from_html(html_content):
@@ -113,64 +168,91 @@ def insert_news(news_id, news_name, author, title, url, publish_time):
     conn.commit()
 
 
+def is_within_seven_days(date_str, taipei_tz):
+    """Check if the given date string is within the last seven days."""
+    news_date = datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
+    news_date = taipei_tz.localize(news_date)
+    seven_days_ago = datetime.now(taipei_tz) - timedelta(days=7)
+    return news_date > seven_days_ago
+
+
 async def main():
     taipei_tz = pytz.timezone('Asia/Taipei')
     seven_days_ago = datetime.now(taipei_tz) - timedelta(days=7)
 
-    # Prepare the SQL statement for checking the existence of news ID
-    check_sql = "SELECT COUNT(*) FROM news WHERE id = ?"
-
-    # Prepare the SQL statement for inserting the news into the database
-    insert_sql = "INSERT INTO news (id, news_name, author, title, url, publish_time) VALUES (?, ?, ?, ?, ?, ?)"
-
     current_url = f"{TARGET_URL}"
     target_page_htmls = await fetch_all([current_url])
-    max_news_id = get_newest_href(target_page_htmls[0])
-    count = 0
-    publish_time = ""
-    while True:
 
-        for news_id in range(max_news_id, max_news_id - 10, -1):
-            print(f"目前在撈：ID {news_url}")
+    payload = extract_payload(target_page_htmls[0])
+    date_str = payload['last_news_review_date']
+    payload = transform_payload(payload)
 
-            news_url = f"{BASE_URL}politics/{news_id}"
-            news_html = await fetch_all([news_url])
+    all_hrefs = set()
 
-            # Check if the news ID already exists in the database
-            cursor.execute(check_sql, (news_id,))
-            exists = cursor.fetchone()[0]
+    hrefs = get_newest_href(target_page_htmls[0])
+    all_hrefs.update(hrefs)
 
-            if not exists:
-                title, author, date_str = extract_details_from_html(
-                    news_html[0])
-                if title == "404 Error":
-                    print(
-                        f"Error 404: Skipping article at {BASE_URL + str(max_news_id)}")
-                    continue
+    while is_within_seven_days(date_str, taipei_tz):
+        new_page = await get_new_page_html(payload)
+        hrefs = get_newest_href(new_page['breaking_news_other'])
+        all_hrefs.update(hrefs)
 
-                publish_time = datetime.strptime(
-                    date_str, "%Y/%m/%d %H:%M").replace(tzinfo=taipei_tz)
-                if publish_time < seven_days_ago:
-                    break
-                cursor.execute(insert_sql, (news_id, NEWS_NAME,
-                               author, title, news_url, date_str))
-                conn.commit()
-            else:
-                print(
-                    f"News with ID {news_id} already exists in the database. Skipping...")
+        # Extract new payload and remove 'breaking_news_other' key
+        payload = create_payload_from_new_page(new_page)
 
-        count += 1
-        max_news_id -= 10
-        # Check the date of the oldest news article
-        if publish_time and publish_time < seven_days_ago:
-            break
+        date_str = new_page['last_news_review_date']
+
+    check_sql = "SELECT COUNT(*) FROM news WHERE id = ?"
+    insert_sql = "INSERT INTO news (id, news_name, author, title, url, publish_time) VALUES (?, ?, ?, ?, ?, ?)"
+
+    async def extract_and_insert_news(news_href):
+        news_url = f"{BASE_URL}{news_href}"
+        news_html = await fetch_all([news_url])
+
+        if news_html[0] is None:
+            print("html none")
+            return
+
+        # Extract news ID from href
+        news_id = news_href.split('/')[-1]
+
+        # Check if the news ID already exists in the database
+        cursor.execute(check_sql, (news_id,))
+        exists = cursor.fetchone()[0]
+
+        if not exists:
+            title, author, date_str = extract_details_from_html(news_html[0])
+            if title == "404 Error":
+                print(f"Error 404: Skipping article at {news_url}")
+                return
+
+            publish_time = datetime.strptime(
+                date_str, "%Y/%m/%d %H:%M").replace(tzinfo=taipei_tz)
+            if publish_time < seven_days_ago:
+                return
+            cursor.execute(insert_sql, (news_id, NEWS_NAME,
+                           author, title, news_url, date_str))
         else:
-            if count > 50:
-                break
+            print(
+                f"News with ID {news_id} already exists in the database. Skipping...")
+
+    coroutines = [extract_and_insert_news(
+        news_href) for news_href in all_hrefs]
+    await asyncio.gather(*coroutines)
+
+    conn.commit()
 
 
-# Run the asyncio event loop
-asyncio.run(main())
+try:
+    # Run the asyncio event loop
+    asyncio.run(main())
 
-# Close database connection
-conn.close()
+except Exception as e:
+    exc_type, exc_value, exc_traceback = sys.exc_info()
+    traceback_details = traceback.extract_tb(exc_traceback)
+    filename, line, func, text = traceback_details[-1]
+
+    print(f"Exception occurred in file {filename} on line {line}: {e}")
+finally:
+    # Close database connection
+    conn.close()
