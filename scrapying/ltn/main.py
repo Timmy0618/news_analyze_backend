@@ -4,7 +4,6 @@ import asyncio
 import aiohttp
 import sqlite3
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin, quote
 import pytz
 import traceback
 import sys
@@ -25,6 +24,13 @@ HEADERS = {
     "Accept-Encoding": "gzip, deflate, br",
     "Upgrade-Insecure-Requests": "1"
 }
+
+taipei_tz = pytz.timezone('Asia/Taipei')
+seven_days_ago = datetime.now(taipei_tz) - timedelta(days=7)
+
+
+def news_contains(news_id):
+    return f"https://news.ltn.com.tw/articleAjax/breakingnews/{news_id}/2"
 
 
 async def fetch(url, session, params=None):
@@ -47,42 +53,35 @@ async def fetch(url, session, params=None):
         return None
 
 
-async def fetch_all(urls):
-    """Fetch all URLs in the given list concurrently."""
+async def fetch_all(urls, proxies=None):
     async with aiohttp.ClientSession() as session:
-        tasks = [fetch(url, session) for url in urls]
+        tasks = [fetch(url, session)
+                 for i, url in enumerate(urls)]
         return await asyncio.gather(*tasks)
 
 
-def extract_author_from_html(html_content):
-    soup = BeautifulSoup(html_content, 'html.parser')
+def extract_reporter_names_from_html(html_content):
+    pattern = r"〔記者(.*?)／"
+    matches = re.findall(pattern, html_content)
 
-    # 尋找特定的 <div> 標籤
-    target_div = soup.find('div', class_='text boxTitle boxText')
-    if not target_div:
-        return ""
+    if matches:
+        # 分割名字並去重
+        names = set()
+        for match in matches:
+            for name in match.split("、"):
+                names.add(name.strip())
+        return ', '.join(names)
+    return None
 
-    # 從該 <div> 標籤中取得所有的 <p> 標籤內容
-    paragraphs = [p.get_text() for p in target_div.find_all('p')]
 
-    # 使用正則表達式匹配常見的記者名稱模式
-    reporter_patterns = [
-        r"〔記者(\w+)",
-        r"文／(\w+)",
-        r"撰文：(\w+)"
-    ]
-
-    reporter_names_set = set()
-
-    for paragraph in paragraphs:
-        for pattern in reporter_patterns:
-            matches = re.findall(pattern, paragraph)
-            for match in matches:
-                if not match.endswith("攝"):
-                    reporter_names_set.add(match)
-
-    # 將 set 轉換為逗號分隔的字串進行回傳
-    return ', '.join(reporter_names_set)
+async def extract_reporter_names(news_id, session):
+    async with session.get(news_contains(news_id), headers=HEADERS) as response:
+        text = await response.text()
+        result = json.loads(text)
+        try:
+            return extract_reporter_names_from_html(result['A_Html'])
+        except:
+            return None
 
 
 def news_exists(news_id):
@@ -92,89 +91,95 @@ def news_exists(news_id):
     return cursor.fetchone() is not None
 
 
-def insert_news(news_id, news_name, author, title, url, publish_time):
-    """Insert news details into the database."""
+def insert_news_with_author(news_info, author):
+    news_id = news_info["news_id"]
+    news_name = news_info["news_name"]
+    title = news_info["title"]
+    url = news_info["url"]
+    publish_time = news_info["publish_time"]
     cursor.execute("INSERT INTO news (id, news_name, author, title, url, publish_time) VALUES (?, ?, ?, ?, ?, ?)",
                    (news_id, news_name, author, title, url, publish_time))
 
 
-async def fetch_news_content(news):
-    html_content = await fetch_all([news['url']])
-    if not html_content or html_content[0] is None:
-        return (None, None)
+async def fetch_news_content(news_url, session):
+    try:
+        async with session.get(news_url, headers=HEADERS) as response:
+            if response.status == 403:  # handle forbidden response
+                print(f"403 Forbidden encountered for URL: {news_url}")
+                return None, None
+            text = await response.text()
+            return news_url, text
+    except Exception as e:
+        print(f"Error fetching {news_url}: {e}")
+        return None, None
 
-    author = extract_author_from_html(html_content[0])
-    return (news, author)
+
+async def fetch_news_info(url, session):
+    async with session.get(url, headers=HEADERS) as response:
+        if response.status == 200:
+            return await response.json()
+        else:
+            return None
+
+
+# 處理單條新聞資訊，儲存除了 author 以外的部分
+async def process_news_item(news_item):
+    news_id = news_item['no']
+    title = news_item['title']
+    url = news_item['url']
+    time_str = news_item['time']
+
+    # 检查时间字符串是否只有时间没有日期
+    if ' ' not in time_str:
+        # 只有时间，没有日期
+        today_date_str = datetime.now().strftime("%Y/%m/%d")
+        publish_time = f"{today_date_str} {time_str}"
+    else:
+        # 已包含日期和时间
+        publish_time = time_str
+
+    return {
+        "news_id": news_id,
+        "news_name": NEWS_NAME,
+        "title": title,
+        "url": url,
+        "publish_time": publish_time,
+    }
 
 
 async def main():
-    taipei_tz = pytz.timezone('Asia/Taipei')
-    seven_days_ago = datetime.now(taipei_tz) - timedelta(days=7)
+
     page = 1
-    news_hrefs = []
-    should_continue = True
+    news_info_list = []
 
-    while should_continue:
-        sleep(1)
-        print(f"正在撈取第：{page}頁")
+    async with aiohttp.ClientSession() as session:
+        while True:
+            print(f"目前在撈：第{page}頁")
+            current_url = f"{TARGET_URL}/{page}"
+            page_data = await fetch_news_info(current_url, session)
 
-        if page > 25:
-            break
+            if not page_data or "data" not in page_data:
+                break
 
-        current_url = f"{TARGET_URL}/{page}"
-        target_page_htmls = await fetch_all([current_url])
-        if not target_page_htmls or target_page_htmls[0] is None:
-            print(f"Failed to fetch data for page {page}. Skipping...")
+            news_data = page_data["data"]
+
+            if isinstance(news_data, dict):
+                news_data = news_data.values()
+            for news_item in news_data:
+                news_info = await process_news_item(news_item)
+                news_info_list.append(news_info)
+
             page += 1
-            continue
-
-        result = json.loads(target_page_htmls[0])
-
-        # Determine if the result is a list or a dictionary
-        if isinstance(result['data'], list):
-            news_list = result['data']
-        else:  # Dictionary format for subsequent pages
-            news_list = result['data'].values()
-
-        # Extract URLs from the relevant articles
-        for news in news_list:
-            news_time_str = news['time']
-            if ' ' in news_time_str:  # Contains both date and time
-                news_date = datetime.strptime(news_time_str, "%Y/%m/%d %H:%M")
-            else:  # Only time is present
-                today_date_str = datetime.now(taipei_tz).strftime("%Y/%m/%d")
-                combined_str = today_date_str + " " + news_time_str
-                news_date = datetime.strptime(combined_str, "%Y/%m/%d %H:%M")
-
-            news_date = taipei_tz.localize(news_date)
-            news['time'] = news_date.strftime("%Y-%m-%d %H:%M:%S")
-
-            if news_date < seven_days_ago:
-                should_continue = False
+            if page > 1:  # 限制页面范围为示例
                 break
+            await asyncio.sleep(1)  # 避免过快请求
 
-            if news_exists(news['no']):
-                print(f"{news['no']}exist")
-                break
-
-            news_hrefs.append(news)
-        # Increment the page number for the next iteration
-        page += 1
-
-    # Step 1: Fetch all news content asynchronously
-    tasks = [fetch_news_content(news) for news in news_hrefs]
-    results = await asyncio.gather(*tasks)
-
-    # Step 2: Handle database operations in the main thread
-    for news, author in results:
-        if news['no'] is None:
-            continue
-
-        if news_exists(news['no']):
-            break
-
-        insert_news(str(news['no']), NEWS_NAME, str(author),
-                    str(news['title']), str(news['url']), str(news['time']))
+        # 假設這裡你有一個函數 extract_author(news_id, session) 能夠異步獲取作者名稱
+        for news_info in news_info_list:
+            if not news_exists(news_info["news_id"]):
+                print(f"目前在撈：新聞id:{news_info['news_id']}")
+                author = await extract_reporter_names(news_info["news_id"], session)
+                insert_news_with_author(news_info, author)
 
     conn.commit()
 
