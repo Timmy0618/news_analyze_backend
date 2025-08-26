@@ -1,12 +1,17 @@
 import requests
 from bs4 import BeautifulSoup
-import sqlite3
 from datetime import datetime
 import random
 import time
 from fake_useragent import UserAgent
 import re
 import hashlib
+import sys
+import os
+
+# 添加父目錄到Python路徑，以便導入database模組
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+from database import news_db
 
 
 def get_author_from_news_page(news_url, headers):
@@ -49,53 +54,23 @@ def get_author_from_news_page(news_url, headers):
         return "中國時報"
 
 
-def insert_news_to_db(cursor, news_items):
+def insert_news_to_db(news_items):
     """
     將新聞數據插入到資料庫中
     
     Args:
-        cursor: 資料庫游標
         news_items: 新聞數據列表
         
     Returns:
         int: 成功插入的數量
     """
-    insert_count = 0
-    
-    for item in news_items:
-        try:
-            # 檢查是否已經存在相同的新聞
-            cursor.execute("SELECT id FROM news WHERE id = ?", (item["id"],))
-            existing = cursor.fetchone()
-            
-            if existing is None:
-                # 插入新聞數據
-                cursor.execute('''
-                    INSERT INTO news (id, news_name, author, title, url, publish_time)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                ''', (item["id"], item["news_name"], item["author"], 
-                      item["title"], item["url"], item["publish_time"]))
-                insert_count += 1
-        except Exception as e:
-            print(f"插入數據時發生錯誤: {e}")
-            continue
-    
-    return insert_count
+    return news_db.insert_news_batch(news_items)
 
 
-def create_news_table(cursor):
-    """創建新聞表格（如果不存在）"""
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS news (
-        id TEXT PRIMARY KEY,
-        news_name TEXT,
-        author TEXT,
-        title TEXT,
-        url TEXT,
-        publish_time TEXT,
-        create_time DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-    ''')
+def create_news_table():
+    """創建新聞表格（如果不存在）- 使用統一數據庫模組"""
+    # 表已經在database模組中自動創建
+    pass
 
 
 def is_today_news_by_url(news_url, today_date_str):
@@ -227,12 +202,11 @@ headers = {"User-Agent": ua.random}
 base_url = "https://www.chinatimes.com/politic/total/?chdtv"
 
 # 連接到數據庫
-conn = sqlite3.connect("./scrapying/news.db")
-cursor = conn.cursor()
+# 使用統一的數據庫模組，不再需要手動連接
 
 
 # 確保表格存在
-create_news_table(cursor)
+create_news_table()
 
 # 獲取今天的日期
 today = datetime.now()
@@ -273,10 +247,7 @@ try:
 
     # 將數據插入到數據庫中
     if all_news_items:
-        insert_count = insert_news_to_db(cursor, all_news_items)
-        
-        # 提交事務
-        conn.commit()
+        insert_count = insert_news_to_db(all_news_items)
         
         print(f"\n數據已成功保存到 news.db，共抓取了 {len(all_news_items)} 則新聞")
         print(f"其中 {insert_count} 則新聞是新增的")
@@ -294,6 +265,4 @@ try:
 except Exception as e:
     print(f"發生錯誤：{e}")
 finally:
-    # 關閉數據庫連接
-    conn.close()
-    print("爬取完成，數據庫連接已關閉")
+    print("爬取完成")

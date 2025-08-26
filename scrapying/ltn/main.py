@@ -2,16 +2,17 @@ from datetime import datetime, timedelta
 import json
 import asyncio
 import aiohttp
-import sqlite3
 from bs4 import BeautifulSoup
 import pytz
 import traceback
 import sys
 from time import sleep
 import re
-# Connect to SQLite database
-conn = sqlite3.connect("./scrapying/news.db")
-cursor = conn.cursor()
+import os
+
+# 添加父目錄到Python路徑，以便導入database模組
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+from database import news_db
 
 # Define the base URL and the target URL
 BASE_URL = "https://news.ltn.com.tw"
@@ -86,9 +87,7 @@ async def extract_reporter_names(news_id, session):
 
 def news_exists(news_id):
     """Check if a news with the given ID already exists in the database."""
-    cursor.execute(
-        "SELECT id FROM news WHERE id=? and news_name=?", (news_id, NEWS_NAME,))
-    return cursor.fetchone() is not None
+    return news_db.news_exists(news_id)
 
 
 def insert_news_with_author(news_info, author):
@@ -97,8 +96,16 @@ def insert_news_with_author(news_info, author):
     title = news_info["title"]
     url = news_info["url"]
     publish_time = news_info["publish_time"]
-    cursor.execute("INSERT INTO news (id, news_name, author, title, url, publish_time) VALUES (?, ?, ?, ?, ?, ?)",
-                   (news_id, news_name, author, title, url, publish_time))
+    
+    news_item = {
+        "id": news_id,
+        "news_name": news_name,
+        "author": author,
+        "title": title,
+        "url": url,
+        "publish_time": publish_time
+    }
+    return news_db.insert_news_item(news_item)
 
 
 async def fetch_news_content(news_url, session):
@@ -181,8 +188,6 @@ async def main():
                 author = await extract_reporter_names(news_info["news_id"], session)
                 insert_news_with_author(news_info, author)
 
-    conn.commit()
-
 try:
     # Run the asyncio event loop
     asyncio.run(main())
@@ -194,5 +199,4 @@ except Exception as e:
 
     print(f"Exception occurred in file {filename} on line {line}: {e}")
 finally:
-    # Close database connection
-    conn.close()
+    print("LTN爬取完成")

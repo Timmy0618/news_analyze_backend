@@ -2,13 +2,15 @@ from datetime import datetime, timedelta
 import re
 import asyncio
 import aiohttp
-import sqlite3
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse, parse_qs
 import pytz
-# Connect to SQLite database
-conn = sqlite3.connect("./scrapying/news.db")
-cursor = conn.cursor()
+import sys
+import os
+
+# 添加父目錄到Python路徑，以便導入database模組
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+from database import news_db
 
 # Define the base URL and the target URL
 BASE_URL = "https://www.setn.com/"
@@ -124,12 +126,21 @@ async def main():
         # Process each news HTML content
         for (link, publish_time), html_content in zip(news_data, news_htmls):
             news_id = link.split('NewsID=')[-1]
-            cursor.execute('SELECT id FROM news WHERE id = ?', (news_id,))
-            if cursor.fetchone() is None:
+            
+            # Check if news exists using unified database
+            if not news_db.news_exists(news_id):
                 title, author = extract_details_from_html(html_content)
-                cursor.execute('INSERT INTO news (id, news_name, author, title, url, publish_time) VALUES (?, ?, ?, ?, ?, ?)',
-                               (news_id, NEWS_NAME, author, title, link, publish_time))
-                conn.commit()
+                
+                # Insert using unified database
+                news_item = {
+                    "id": news_id,
+                    "news_name": NEWS_NAME,
+                    "author": author,
+                    "title": title,
+                    "url": link,
+                    "publish_time": publish_time
+                }
+                news_db.insert_news_item(news_item)
 
         page += 1  # Go to the next page
 
@@ -137,5 +148,4 @@ async def main():
 # Run the asyncio event loop
 asyncio.run(main())
 
-# Close database connection
-conn.close()
+print("SETN爬取完成")
