@@ -27,7 +27,23 @@ HEADERS = {
 }
 
 taipei_tz = pytz.timezone('Asia/Taipei')
-seven_days_ago = datetime.now(taipei_tz) - timedelta(days=7)
+
+
+def is_today_news(publish_time_str, today_date_str):
+    """Check if the given publish time is from today."""
+    try:
+        # Handle different time formats
+        if ' ' not in publish_time_str:
+            # Only time, add today's date
+            today_date_full = datetime.now(taipei_tz).strftime("%Y/%m/%d")
+            publish_time_str = f"{today_date_full} {publish_time_str}"
+        
+        # Parse the publish time string in format "2025/08/26 15:30"
+        news_date = datetime.strptime(publish_time_str, "%Y/%m/%d %H:%M")
+        news_date_str = news_date.strftime("%Y%m%d")
+        return news_date_str == today_date_str
+    except (ValueError, AttributeError):
+        return False
 
 
 def news_contains(news_id):
@@ -155,12 +171,18 @@ async def process_news_item(news_item):
 
 
 async def main():
+    # 獲取今天的日期（格式：20250826）
+    today = datetime.now(taipei_tz)
+    today_date_str = today.strftime("%Y%m%d")
+    print(f"今天的日期: {today_date_str}")
+    print("開始抓取LTN政治新聞，只抓取今天的新聞...")
 
     page = 1
     news_info_list = []
+    found_non_today_news = False
 
     async with aiohttp.ClientSession() as session:
-        while True:
+        while not found_non_today_news:
             print(f"目前在撈：第{page}頁")
             current_url = f"{TARGET_URL}/{page}"
             page_data = await fetch_news_info(current_url, session)
@@ -172,21 +194,36 @@ async def main():
 
             if isinstance(news_data, dict):
                 news_data = news_data.values()
+            
+            page_today_count = 0
             for news_item in news_data:
                 news_info = await process_news_item(news_item)
-                news_info_list.append(news_info)
+                
+                # Check if this news is from today
+                if is_today_news(news_info["publish_time"], today_date_str):
+                    news_info_list.append(news_info)
+                    page_today_count += 1
+                else:
+                    print(f"發現非今天的新聞，停止抓取: {news_info['publish_time']}")
+                    found_non_today_news = True
+                    break
+            
+            print(f"本頁找到 {page_today_count} 則今天的新聞")
+            
+            if found_non_today_news:
+                break
 
             page += 1
-            if page > 1:  # 限制页面范围为示例
-                break
             await asyncio.sleep(1)  # 避免过快请求
 
-        # 假設這裡你有一個函數 extract_author(news_id, session) 能夠異步獲取作者名稱
+        # 處理今天的新聞
         for news_info in news_info_list:
             if not news_exists(news_info["news_id"]):
-                print(f"目前在撈：新聞id:{news_info['news_id']}")
+                print(f"處理今天的新聞: {news_info['title'][:50]}...")
                 author = await extract_reporter_names(news_info["news_id"], session)
                 insert_news_with_author(news_info, author)
+        
+        print(f"LTN新聞處理完成，共處理 {len(news_info_list)} 則今天的新聞")
 
 try:
     # Run the asyncio event loop

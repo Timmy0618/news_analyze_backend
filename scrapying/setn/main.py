@@ -34,6 +34,17 @@ def extract_author(text):
     return None  # Return None if no pattern matches
 
 
+def is_today_news(publish_time_str, today_date_str):
+    """Check if the given publish time is from today."""
+    try:
+        # Parse the publish time string in format "2025-08-26 15:30:00"
+        news_date = datetime.strptime(publish_time_str, "%Y-%m-%d %H:%M:%S")
+        news_date_str = news_date.strftime("%Y%m%d")
+        return news_date_str == today_date_str
+    except (ValueError, AttributeError):
+        return False
+
+
 async def fetch(url, session):
     """Fetch a URL using aiohttp."""
     async with session.get(url) as response:
@@ -101,48 +112,72 @@ def extract_details_from_html(html_content):
 
 async def main():
     taipei_tz = pytz.timezone('Asia/Taipei')
-    seven_days_ago = datetime.now(taipei_tz) - timedelta(days=7)
+    
+    # 獲取今天的日期（格式：20250826）
+    today = datetime.now(taipei_tz)
+    today_date_str = today.strftime("%Y%m%d")
+    print(f"今天的日期: {today_date_str}")
+    print("開始抓取SETN政治新聞，只抓取今天的新聞...")
 
     page = 1
-    while True:
+    found_non_today_news = False
+    
+    while not found_non_today_news:
         print(f"目前在撈：第{page}頁")
         current_url = f"{TARGET_URL}&p={page}"
         target_page_htmls = await fetch_all([current_url])
         news_data = get_news_links_from_html(target_page_htmls[0])
 
-        # Check if the earliest news on the page is within the last 7 days
-        earliest_news_time = min(data[1] for data in news_data)
-        earliest_news_datetime = datetime.strptime(
-            earliest_news_time, '%Y-%m-%d %H:%M:%S')
-        earliest_news_datetime = taipei_tz.localize(earliest_news_datetime)
-
-        if earliest_news_datetime < seven_days_ago:
-            break  # Stop if the news is older than 7 days
-
-        # Fetch each news link concurrently
-        news_links = [data[0] for data in news_data]
-        news_htmls = await fetch_all(news_links)
-
-        # Process each news HTML content
-        for (link, publish_time), html_content in zip(news_data, news_htmls):
-            news_id = link.split('NewsID=')[-1]
+        # Check each news item to see if it's from today
+        page_today_count = 0
+        for data in news_data:
+            link, publish_time = data
             
-            # Check if news exists using unified database
-            if not news_db.news_exists(news_id):
-                title, author = extract_details_from_html(html_content)
+            # Check if this news is from today
+            if is_today_news(publish_time, today_date_str):
+                page_today_count += 1
+            else:
+                print(f"發現非今天的新聞，停止抓取: {publish_time}")
+                found_non_today_news = True
+                break
+        
+        print(f"本頁找到 {page_today_count} 則今天的新聞")
+        
+        if found_non_today_news:
+            break
+
+        # Fetch each news link concurrently (only for today's news)
+        today_news_data = [(link, publish_time) for link, publish_time in news_data 
+                          if is_today_news(publish_time, today_date_str)]
+        
+        if today_news_data:
+            news_links = [data[0] for data in today_news_data]
+            news_htmls = await fetch_all(news_links)
+
+            # Process each news HTML content
+            for (link, publish_time), html_content in zip(today_news_data, news_htmls):
+                news_id = link.split('NewsID=')[-1]
                 
-                # Insert using unified database
-                news_item = {
-                    "id": news_id,
-                    "news_name": NEWS_NAME,
-                    "author": author,
-                    "title": title,
-                    "url": link,
-                    "publish_time": publish_time
-                }
-                news_db.insert_news_item(news_item)
+                # Check if news exists using unified database
+                if not news_db.news_exists(news_id):
+                    title, author = extract_details_from_html(html_content)
+                    
+                    print(f"插入今天的新聞: {title[:50] if title else 'No title'}...")
+                    
+                    # Insert using unified database
+                    news_item = {
+                        "id": news_id,
+                        "news_name": NEWS_NAME,
+                        "author": author,
+                        "title": title,
+                        "url": link,
+                        "publish_time": publish_time
+                    }
+                    news_db.insert_news_item(news_item)
 
         page += 1  # Go to the next page
+        
+    print(f"SETN新聞處理完成")
 
 
 # Run the asyncio event loop
