@@ -148,43 +148,25 @@ def extract_details_from_html(html_content):
     return title, author, date_str
 
 
-def is_within_seven_days(date_str, taipei_tz):
-    """Check if the given date string is within the last seven days."""
-    news_date = datetime.strptime(date_str, "%Y/%m/%d %H:%M")
-    news_date = taipei_tz.localize(news_date)
-    seven_days_ago = datetime.now(taipei_tz) - timedelta(days=7)
-    return news_date > seven_days_ago
-
-
-def news_exists(news_id):
-    """Check if a news with the given ID already exists in the database."""
-    return news_db.news_exists(news_id)
-
-
-def insert_news(news_id, news_name, author, title, url, publish_time):
-    """Insert news details into the database."""
-    news_item = {
-        "id": news_id,
-        "news_name": news_name,
-        "author": author,
-        "title": title,
-        "url": url,
-        "publish_time": publish_time
-    }
-    return news_db.insert_news_item(news_item)
-
-
-def is_within_seven_days(date_str, taipei_tz):
-    """Check if the given date string is within the last seven days."""
-    news_date = datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
-    news_date = taipei_tz.localize(news_date)
-    seven_days_ago = datetime.now(taipei_tz) - timedelta(days=7)
-    return news_date > seven_days_ago
+def is_today_news(date_str, today_date_str):
+    """Check if the given date string is from today."""
+    try:
+        # Parse the date string in format "2025/08/26 15:30"
+        news_date = datetime.strptime(date_str, "%Y/%m/%d %H:%M")
+        news_date_str = news_date.strftime("%Y%m%d")
+        return news_date_str == today_date_str
+    except (ValueError, AttributeError):
+        return False
 
 
 async def main():
     taipei_tz = pytz.timezone('Asia/Taipei')
-    seven_days_ago = datetime.now(taipei_tz) - timedelta(days=7)
+    
+    # 獲取今天的日期（格式：20250826）
+    today = datetime.now(taipei_tz)
+    today_date_str = today.strftime("%Y%m%d")
+    print(f"今天的日期: {today_date_str}")
+    print("開始抓取TVBS政治新聞，只抓取今天的新聞...")
 
     current_url = f"{TARGET_URL}"
     target_page_htmls = await fetch_all([current_url])
@@ -194,22 +176,49 @@ async def main():
     payload = transform_payload(payload)
 
     all_hrefs = set()
+    found_non_today_news = False
 
+    # Get initial hrefs
     hrefs = get_newest_href(target_page_htmls[0])
     all_hrefs.update(hrefs)
 
-    while is_within_seven_days(date_str, taipei_tz):
-        new_page = await get_new_page_html(payload)
-        hrefs = get_newest_href(new_page['breaking_news_other'])
-        all_hrefs.update(hrefs)
+    # Continue fetching pages until we find non-today news
+    while not found_non_today_news:
+        try:
+            new_page = await get_new_page_html(payload)
+            hrefs = get_newest_href(new_page['breaking_news_other'])
+            
+            # Check each news item to see if it's from today
+            page_today_count = 0
+            for href in hrefs:
+                # Extract news details to check date
+                news_url = f"{BASE_URL}{href}"
+                news_html = await fetch_all([news_url])
+                
+                if news_html[0] is not None:
+                    title, author, news_date_str = extract_details_from_html(news_html[0])
+                    if news_date_str and is_today_news(news_date_str, today_date_str):
+                        all_hrefs.add(href)
+                        page_today_count += 1
+                    elif news_date_str and not is_today_news(news_date_str, today_date_str):
+                        print(f"發現非今天的新聞，停止抓取: {news_date_str}")
+                        found_non_today_news = True
+                        break
+            
+            print(f"本頁找到 {page_today_count} 則今天的新聞")
+            
+            if found_non_today_news:
+                break
 
-        # Extract new payload and remove 'breaking_news_other' key
-        payload = create_payload_from_new_page(new_page)
+            # Extract new payload and remove 'breaking_news_other' key
+            payload = create_payload_from_new_page(new_page)
+            date_str = new_page['last_news_review_date']
+            
+        except Exception as e:
+            print(f"抓取頁面時發生錯誤: {e}")
+            break
 
-        date_str = new_page['last_news_review_date']
-
-    check_sql = "SELECT COUNT(*) FROM news WHERE id = ?"
-    insert_sql = "INSERT INTO news (id, news_name, author, title, url, publish_time) VALUES (?, ?, ?, ?, ?, ?)"
+    print(f"共找到 {len(all_hrefs)} 則今天的新聞連結")
 
     async def extract_and_insert_news(news_href):
         news_url = f"{BASE_URL}{news_href}"
@@ -223,7 +232,7 @@ async def main():
         news_id = news_href.split('/')[-1]
 
         # Check if the news ID already exists in the database using unified database
-        if news_exists(news_id):
+        if news_db.news_exists(news_url):
             print(f"News with ID {news_id} already exists in the database. Skipping...")
             return
 
@@ -233,17 +242,23 @@ async def main():
             return
 
         if date_str:
-            publish_time = datetime.strptime(
-                date_str, "%Y/%m/%d %H:%M").replace(tzinfo=taipei_tz)
-            if publish_time < seven_days_ago:
-                return
-            
-            # Insert using unified database
-            insert_news(news_id, NEWS_NAME, author, title, news_url, date_str)
+            # Since we've already filtered for today's news in main(), we can directly insert
+            print(f"插入今天的新聞: {title[:50]}...")
+            news_item = {
+                "title": title,
+                "link": news_url,
+                "content": f"作者: {author}",
+                "date": date_str,
+                "source": "TVBS"
+            }
+            news_db.insert_news_item(news_item)
 
+    print(f"開始處理 {len(all_hrefs)} 則新聞...")
     coroutines = [extract_and_insert_news(
         news_href) for news_href in all_hrefs]
     await asyncio.gather(*coroutines)
+    
+    print(f"TVBS新聞處理完成")
 
 
 try:
