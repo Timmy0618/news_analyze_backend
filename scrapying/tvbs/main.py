@@ -2,15 +2,16 @@ from datetime import datetime, timedelta
 import json
 import asyncio
 import aiohttp
-import sqlite3
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, quote
 import pytz
 import traceback
 import sys
-# Connect to SQLite database
-conn = sqlite3.connect("./scrapying/news.db")
-cursor = conn.cursor()
+import os
+
+# 添加父目錄到Python路徑，以便導入database模組
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+from database import news_db
 
 # Define the base URL and the target URL
 BASE_URL = "https://news.tvbs.com.tw"
@@ -157,15 +158,20 @@ def is_within_seven_days(date_str, taipei_tz):
 
 def news_exists(news_id):
     """Check if a news with the given ID already exists in the database."""
-    cursor.execute("SELECT id FROM news WHERE id=?", (news_id,))
-    return cursor.fetchone() is not None
+    return news_db.news_exists(news_id)
 
 
 def insert_news(news_id, news_name, author, title, url, publish_time):
     """Insert news details into the database."""
-    cursor.execute("INSERT INTO news (id, news_name, author, title, url, publish_time) VALUES (?, ?, ?, ?, ?, ?)",
-                   (news_id, news_name, author, title, url, publish_time))
-    conn.commit()
+    news_item = {
+        "id": news_id,
+        "news_name": news_name,
+        "author": author,
+        "title": title,
+        "url": url,
+        "publish_time": publish_time
+    }
+    return news_db.insert_news_item(news_item)
 
 
 def is_within_seven_days(date_str, taipei_tz):
@@ -216,31 +222,28 @@ async def main():
         # Extract news ID from href
         news_id = news_href.split('/')[-1]
 
-        # Check if the news ID already exists in the database
-        cursor.execute(check_sql, (news_id,))
-        exists = cursor.fetchone()[0]
+        # Check if the news ID already exists in the database using unified database
+        if news_exists(news_id):
+            print(f"News with ID {news_id} already exists in the database. Skipping...")
+            return
 
-        if not exists:
-            title, author, date_str = extract_details_from_html(news_html[0])
-            if title == "404 Error":
-                print(f"Error 404: Skipping article at {news_url}")
-                return
+        title, author, date_str = extract_details_from_html(news_html[0])
+        if title == "404 Error":
+            print(f"Error 404: Skipping article at {news_url}")
+            return
 
+        if date_str:
             publish_time = datetime.strptime(
                 date_str, "%Y/%m/%d %H:%M").replace(tzinfo=taipei_tz)
             if publish_time < seven_days_ago:
                 return
-            cursor.execute(insert_sql, (news_id, NEWS_NAME,
-                           author, title, news_url, date_str))
-        else:
-            print(
-                f"News with ID {news_id} already exists in the database. Skipping...")
+            
+            # Insert using unified database
+            insert_news(news_id, NEWS_NAME, author, title, news_url, date_str)
 
     coroutines = [extract_and_insert_news(
         news_href) for news_href in all_hrefs]
     await asyncio.gather(*coroutines)
-
-    conn.commit()
 
 
 try:
@@ -252,7 +255,9 @@ except Exception as e:
     traceback_details = traceback.extract_tb(exc_traceback)
     filename, line, func, text = traceback_details[-1]
 
-    print(f"Exception occurred in file {filename} on line {line}: {e}")
+    print(f"ERROR: {e}")
+    print(f"File: {filename}, Line: {line}, Function: {func}")
+    print(f"Code: {text}")
+
 finally:
-    # Close database connection
-    conn.close()
+    print("TVBS爬取完成")
