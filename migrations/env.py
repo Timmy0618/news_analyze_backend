@@ -1,9 +1,14 @@
 from logging.config import fileConfig
+import os
+from dotenv import load_dotenv
 
 from sqlalchemy import engine_from_config
 from sqlalchemy import pool
 
 from alembic import context
+
+# 載入環境變數
+load_dotenv()
 
 # 導入 News 模型
 from models import Base
@@ -11,6 +16,26 @@ from models import Base
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
+
+# 根據環境變數設定資料庫 URL
+def get_database_url():
+    """根據環境變數獲取資料庫連線 URL"""
+    database_type = os.getenv('DATABASE_TYPE', 'sqlite')
+    
+    if database_type == 'postgresql':
+        host = os.getenv('POSTGRES_HOST', 'localhost')
+        port = os.getenv('POSTGRES_PORT', '5432')
+        database = os.getenv('POSTGRES_DATABASE', 'news_analyze')
+        user = os.getenv('POSTGRES_USER', 'news_user')
+        password = os.getenv('POSTGRES_PASSWORD', 'news_password_2024')
+        return f'postgresql://{user}:{password}@{host}:{port}/{database}'
+    else:
+        # SQLite
+        sqlite_path = os.getenv('SQLITE_DB_PATH', './news.db')
+        return f'sqlite:///{sqlite_path}'
+
+# 設定資料庫 URL
+config.set_main_option('sqlalchemy.url', get_database_url())
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.

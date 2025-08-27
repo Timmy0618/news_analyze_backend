@@ -7,37 +7,37 @@ import sys
 import os
 from datetime import datetime
 from typing import Dict, Any
-
-# 確保可以導入專案模組
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'scrapying'))
-sys.path.insert(0, os.path.dirname(__file__))
+import concurrent.futures
+import threading
 
 # 導入ORM版本的爬蟲
 try:
-    from setn_new import SETNScraper
+    from scrapying.setn_new import SETNScraper
 except ImportError:
     SETNScraper = None
     print("警告: SETN爬蟲導入失敗")
 
 try:
-    from ltn_scraper_orm import LTNScraper  
+    from scrapying.ltn_scraper_orm import LTNScraper  
 except ImportError:
     LTNScraper = None
     print("警告: LTN爬蟲導入失敗")
 
 try:
-    from tvbs_scraper_orm import TVBSScraper
+    from scrapying.tvbs_scraper_orm import TVBSScraper
 except ImportError:
     TVBSScraper = None
     print("警告: TVBS爬蟲導入失敗")
 
 try:
-    from chinatimes_scraper_orm import ChinaTimesScraper
+    from scrapying.chinatimes_scraper_orm import ChinaTimesScraper
 except ImportError:
     ChinaTimesScraper = None
     print("警告: ChinaTimes爬蟲導入失敗")
 
-from news_orm_db import news_orm_db
+from news_orm_db import NewsORMDatabase
+
+news_orm_db = NewsORMDatabase()
 
 
 class UnifiedScraperManager:
@@ -63,31 +63,46 @@ class UnifiedScraperManager:
         
         print(f"已初始化 {len(self.scrapers)} 個爬蟲: {list(self.scrapers.keys())}")
     
+    def _scrape_single_source(self, name: str, scraper, max_pages: int = 1) -> tuple:
+        """單一爬蟲執行函數"""
+        try:
+            print(f"🔄 開始執行 {name} 爬蟲...")
+            result = scraper.scrape_news(max_pages=max_pages)
+            print(f"✅ {name} 完成 - 總計:{result['total']}, 新增:{result['new']}, 跳過:{result['skipped']}, 失敗:{result['failed']}")
+            return name, result
+        except Exception as e:
+            print(f"❌ {name} 爬蟲執行失敗: {e}")
+            return name, {'error': str(e)}
+    
     def run_all_scrapers(self, max_pages: int = 1) -> Dict[str, Any]:
-        """執行所有爬蟲"""
-        print(f"開始執行所有爬蟲 (每個爬蟲最多 {max_pages} 頁)")
+        """並行執行所有爬蟲"""
+        print(f"🚀 並行執行所有爬蟲 (每個爬蟲最多 {max_pages} 頁)")
         print("=" * 50)
         
         results = {}
         total_stats = {'total': 0, 'new': 0, 'skipped': 0, 'failed': 0}
         
-        for name, scraper in self.scrapers.items():
-            print(f"\n正在執行 {name} 爬蟲...")
-            try:
-                result = scraper.scrape_news(max_pages=max_pages)
+        # 使用線程池並行執行所有爬蟲
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(self.scrapers)) as executor:
+            # 提交所有爬蟲任務
+            futures = {
+                executor.submit(self._scrape_single_source, name, scraper, max_pages): name
+                for name, scraper in self.scrapers.items()
+            }
+            
+            # 等待所有任務完成
+            for future in concurrent.futures.as_completed(futures):
+                name, result = future.result()
                 results[name] = result
                 
-                # 累計統計
-                for key in total_stats:
-                    total_stats[key] += result.get(key, 0)
-                
-                print(f"{name} 完成 - 總計:{result['total']}, 新增:{result['new']}, 跳過:{result['skipped']}, 失敗:{result['failed']}")
-                
-            except Exception as e:
-                print(f"{name} 爬蟲執行失敗: {e}")
-                results[name] = {'error': str(e)}
+                # 累計統計（只有成功的結果才計入）
+                if 'error' not in result:
+                    for key in total_stats:
+                        if key in result and isinstance(result[key], int):
+                            total_stats[key] += result[key]
         
         results['總計'] = total_stats
+        print(f"\n📊 並行執行完成！總計: {total_stats}")
         return results
     
     def run_single_scraper(self, scraper_name: str, max_pages: int = 1) -> Dict[str, Any]:

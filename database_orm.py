@@ -7,15 +7,15 @@ from sqlalchemy.orm import sessionmaker, Session
 from contextlib import contextmanager
 from models import Base
 
-# 資料庫路徑設定
-SCRIPT_DIR = os.path.dirname(__file__)
-import os
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, Session
-from contextlib import contextmanager
-
-# 設置資料庫路徑為 scrapying/news.db
-DATABASE_URL = f"sqlite:///{os.path.join(os.path.dirname(__file__), 'scrapying', 'news.db')}"
+try:
+    from config import Config
+    # 使用配置文件中的資料庫URL
+    DATABASE_URL = Config.get_database_url()
+    print(f"使用配置的資料庫: {Config.DATABASE_TYPE}")
+except ImportError:
+    # 如果沒有配置文件，使用默認的SQLite設定
+    DATABASE_URL = f"sqlite:///{os.path.join(os.path.dirname(__file__), 'news.db')}"
+    print("使用默認SQLite資料庫設定")
 
 # 創建引擎
 engine = create_engine(

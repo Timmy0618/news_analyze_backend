@@ -13,6 +13,8 @@ cloudscraper = "*"
 selenium = "*"
 sqlalchemy = "*"
 alembic = "*"
+python-dotenv = "*"
+psycopg2-binary = "*"
 
 [dev-packages]
 
