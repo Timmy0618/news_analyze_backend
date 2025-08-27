@@ -11,6 +11,8 @@ pytz = "*"
 brotli = "*"
 cloudscraper = "*"
 selenium = "*"
+sqlalchemy = "*"
+alembic = "*"
 
 [dev-packages]
 

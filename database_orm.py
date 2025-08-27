@@ -1,0 +1,72 @@
+"""
+SQLAlchemy 資料庫連接設定
+"""
+import os
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, Session
+from contextlib import contextmanager
+from models import Base
+
+# 資料庫路徑設定
+SCRIPT_DIR = os.path.dirname(__file__)
+import os
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, Session
+from contextlib import contextmanager
+
+# 設置資料庫路徑為 scrapying/news.db
+DATABASE_URL = f"sqlite:///{os.path.join(os.path.dirname(__file__), 'scrapying', 'news.db')}"
+
+# 創建引擎
+engine = create_engine(
+    DATABASE_URL,
+    echo=False,  # 設為 True 可以看到 SQL 查詢
+    pool_pre_ping=True
+)
+
+# 創建 Session 類
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+def create_tables():
+    """創建所有資料表"""
+    Base.metadata.create_all(bind=engine)
+    print("資料表創建完成")
+
+
+@contextmanager
+def get_db_session():
+    """
+    獲取資料庫 session 的上下文管理器
+    
+    Usage:
+        with get_db_session() as session:
+            # 使用 session 進行資料庫操作
+    """
+    session = SessionLocal()
+    try:
+        yield session
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        raise e
+    finally:
+        session.close()
+
+
+def get_session() -> Session:
+    """
+    獲取新的資料庫 session
+    注意：使用完畢後需要手動關閉 session
+    """
+    return SessionLocal()
+
+
+# 初始化資料庫表格
+def init_database():
+    """初始化資料庫"""
+    try:
+        create_tables()
+        print("資料庫初始化完成")
+    except Exception as e:
+        print(f"資料庫初始化失敗: {e}")
