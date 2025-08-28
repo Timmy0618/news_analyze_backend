@@ -15,6 +15,10 @@ sqlalchemy = "*"
 alembic = "*"
 python-dotenv = "*"
 psycopg2-binary = "*"
+fastapi = "*"
+uvicorn = "*"
+schedule = "*"
+pydantic = "*"
 
 [dev-packages]
 
