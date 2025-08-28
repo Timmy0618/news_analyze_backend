@@ -35,9 +35,9 @@ except ImportError:
     ChinaTimesScraper = None
     print("警告: ChinaTimes爬蟲導入失敗")
 
-from news_orm_db import NewsORMDatabase
+from db.database_factory import get_database
 
-news_orm_db = NewsORMDatabase()
+news_db = get_database()
 
 
 class UnifiedScraperManager:
@@ -120,10 +120,10 @@ class UnifiedScraperManager:
         print("資料庫統計信息:")
         print("-" * 30)
         
-        total_count = news_orm_db.get_news_count()
+        total_count = news_db.get_news_count()
         print(f"總新聞數: {total_count}")
         
-        source_counts = news_orm_db.get_news_count_by_source()
+        source_counts = news_db.get_news_count_by_source()
         print("\n各來源統計:")
         for source, count in source_counts:
             print(f"  {source}: {count} 條新聞")
@@ -138,7 +138,7 @@ class UnifiedScraperManager:
         print(f"\n最近 {limit} 條新聞:")
         print("-" * 50)
         
-        recent_news = news_orm_db.get_recent_news(limit)
+        recent_news = news_db.get_recent_news(limit)
         for i, news in enumerate(recent_news, 1):
             print(f"{i:2d}. [{news['news_source']}] {news['title'][:60]}...")
             print(f"     作者: {news['author']} | 時間: {news['publish_time']}")
