@@ -66,8 +66,22 @@ class LTNScraper(BaseNewsScraper):
     def _get_news_detail(self, news_url: str) -> Optional[Dict[str, Any]]:
         """獲取新聞詳細內容"""
         try:
-            # 直接從新聞頁面提取記者資訊
-            author = self._extract_reporter_names(news_url)
+            author = None
+            
+            # 根據URL類型選擇不同的提取方法
+            if '/paper/' in news_url:
+                # 處理報紙版文章 (paper類型)
+                author = self._extract_reporter_from_paper(news_url)
+            elif '/breakingnews/' in news_url:
+                # 處理即時新聞文章 (breakingnews類型)
+                # 先嘗試API方法
+                author = self._extract_reporter_names(news_url)
+                # 如果API方法失敗，回退到通用方法
+                if not author:
+                    author = self._extract_reporter_from_general(news_url)
+            else:
+                # 通用處理方法
+                author = self._extract_reporter_from_general(news_url)
             
             return {
                 "author": author or ""
@@ -167,22 +181,34 @@ class LTNScraper(BaseNewsScraper):
     def _extract_reporter_names_from_html(self, html_content: str) -> Optional[str]:
         """從HTML內容中提取記者名稱"""
         try:
-            # 使用多種正則表達式模式提取記者資訊
+            # 使用多種正則表達式模式提取記者資訊，包含更多格式
             patterns = [
-                r"〔記者(.*?)／",        # 〔記者XXX／
-                r"記者(.*?)／",          # 記者XXX／
-                r"記者(.*?)攝",          # 記者XXX攝
-                r"(.*?)攝\）",           # XXX攝）
-                r"(.*?)攝",              # XXX攝
-                r"採訪(.*?)／",          # 採訪XXX／
-                r"撰稿(.*?)／",          # 撰稿XXX／
+                r"〔記者(.*?)／(.*?)報導〕",   # 〔記者XXX／地點報導〕
+                r"〔記者(.*?)／",             # 〔記者XXX／
+                r"記者(.*?)／(.*?)報導",       # 記者XXX／地點報導
+                r"記者(.*?)／",               # 記者XXX／
+                r"記者(.*?)攝",               # 記者XXX攝
+                r"(.*?)攝\）",                # XXX攝）
+                r"(.*?)攝",                   # XXX攝
+                r"採訪(.*?)／",               # 採訪XXX／
+                r"撰稿(.*?)／",               # 撰稿XXX／
+                r"編譯(.*?)／",               # 編譯XXX／
+                r"綜合報導\/(.*?)報導",       # 綜合報導/XXX報導
+                r"文\/(.*?)記者",             # 文/XXX記者
+                r"文\/(.*?)\s",               # 文/XXX（空格結尾）
             ]
             
             all_matches = []
             for pattern in patterns:
                 matches = re.findall(pattern, html_content)
                 if matches:
-                    all_matches.extend(matches)
+                    # 處理包含元組的匹配結果
+                    for match in matches:
+                        if isinstance(match, tuple):
+                            # 對於元組，取第一個元素（記者姓名）
+                            all_matches.append(match[0])
+                        else:
+                            all_matches.append(match)
             
             if all_matches:
                 # 分割名字並去重和清理
@@ -191,8 +217,11 @@ class LTNScraper(BaseNewsScraper):
                     # 處理多個記者名稱（用「、」分隔）
                     for name in match.split("、"):
                         clean_name = name.strip()
-                        # 去除常見的後綴（攝影、攝）、括弧等）
-                        clean_name = re.sub(r'[攝影、攝）\)]+.*$', '', clean_name)
+                        # 去除常見的後綴（攝影、攝、報導等）和括弧
+                        clean_name = re.sub(r'[攝影、攝報導）\)]+.*$', '', clean_name)
+                        clean_name = re.sub(r'\(.*?\)', '', clean_name)  # 去除括弧內容
+                        clean_name = clean_name.strip()
+                        
                         # 只保留中文姓名（2-4個字符）
                         if re.match(r'^[\u4e00-\u9fff]{2,4}$', clean_name):
                             names.add(clean_name)
@@ -200,10 +229,149 @@ class LTNScraper(BaseNewsScraper):
                 if names:
                     return ', '.join(sorted(names))  # 排序保持一致性
             
+            # 如果上述模式都沒有找到，嘗試更寬泛的搜索
+            # 尋找以記者開頭的段落
+            lines = html_content.split('\n')
+            for line in lines:
+                line = line.strip()
+                if line.startswith('〔記者') or line.startswith('記者'):
+                    # 清理HTML標籤
+                    clean_line = re.sub(r'<[^>]+>', '', line)
+                    # 使用基本模式提取
+                    basic_patterns = [
+                        r'〔記者([^／]+)',
+                        r'記者([^／]+)'
+                    ]
+                    for pattern in basic_patterns:
+                        match = re.search(pattern, clean_line)
+                        if match:
+                            name = match.group(1).strip()
+                            if re.match(r'^[\u4e00-\u9fff]{2,4}$', name):
+                                return name
+            
             return None
             
         except Exception as e:
             self.logger.error(f"從HTML提取記者名稱失敗: {e}")
+            return None
+
+    def _extract_reporter_from_paper(self, news_url: str) -> Optional[str]:
+        """從LTN報紙版文章中提取記者資訊"""
+        try:
+            response = self.session.get(news_url, timeout=10)
+            if response.status_code != 200:
+                self.logger.warning(f"無法獲取頁面內容: {news_url}")
+                return None
+            
+            html_content = response.text
+            return self._extract_reporter_names_from_html(html_content)
+            
+        except Exception as e:
+            self.logger.error(f"從報紙版提取記者資訊失敗: {e}")
+            return None
+
+    def _extract_reporter_from_general(self, news_url: str) -> Optional[str]:
+        """從一般LTN文章中提取記者資訊（通用方法）"""
+        try:
+            response = self.session.get(news_url, timeout=10)
+            if response.status_code != 200:
+                self.logger.warning(f"無法獲取頁面內容: {news_url}")
+                return None
+            
+            html_content = response.text
+            
+            # 方法1: 從HTML內容直接提取
+            author = self._extract_reporter_names_from_html(html_content)
+            if author:
+                return author
+            
+            # 方法2: 從JSON-LD結構化資料中提取
+            author = self._extract_reporter_from_json_ld(html_content)
+            if author:
+                return author
+            
+            # 方法3: 從meta標籤中提取
+            author = self._extract_reporter_from_meta(html_content)
+            if author:
+                return author
+                
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"從一般文章提取記者資訊失敗: {e}")
+            return None
+
+    def _extract_reporter_from_json_ld(self, html_content: str) -> Optional[str]:
+        """從JSON-LD結構化資料中提取記者資訊"""
+        try:
+            import json
+            import re
+            
+            # 尋找JSON-LD標籤
+            json_ld_pattern = r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>'
+            json_matches = re.findall(json_ld_pattern, html_content, re.DOTALL | re.IGNORECASE)
+            
+            for json_text in json_matches:
+                try:
+                    data = json.loads(json_text.strip())
+                    
+                    # 檢查不同的JSON-LD欄位
+                    text_fields = []
+                    
+                    # 常見的欄位名稱
+                    if isinstance(data, dict):
+                        for field in ['description', 'articleBody', 'text', 'headline']:
+                            if field in data and isinstance(data[field], str):
+                                text_fields.append(data[field])
+                    
+                    # 從這些文字欄位中提取記者資訊
+                    for text in text_fields:
+                        author = self._extract_reporter_names_from_html(text)
+                        if author:
+                            return author
+                            
+                except json.JSONDecodeError:
+                    continue
+                    
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"從JSON-LD提取記者資訊失敗: {e}")
+            return None
+
+    def _extract_reporter_from_meta(self, html_content: str) -> Optional[str]:
+        """從meta標籤中提取記者資訊"""
+        try:
+            import re
+            from bs4 import BeautifulSoup
+            
+            soup = BeautifulSoup(html_content, 'html.parser')
+            
+            # 檢查各種meta標籤
+            meta_tags = soup.find_all('meta')
+            
+            for tag in meta_tags:
+                # 檢查content屬性
+                content = tag.get('content', '')
+                if content and '記者' in content:
+                    author = self._extract_reporter_names_from_html(content)
+                    if author:
+                        return author
+                
+                # 檢查name或property屬性
+                name = tag.get('name', '') or tag.get('property', '')
+                if name and ('author' in name.lower() or 'creator' in name.lower()):
+                    content = tag.get('content', '')
+                    if content:
+                        # 如果直接是作者名稱
+                        clean_name = content.strip()
+                        if re.match(r'^[\u4e00-\u9fff]{2,4}$', clean_name):
+                            return clean_name
+            
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"從meta標籤提取記者資訊失敗: {e}")
             return None
 
 
