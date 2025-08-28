@@ -183,7 +183,7 @@ class BaseNewsScraper(ABC):
     
     def scrape_news(self, max_pages: int = 1, skip_existing: bool = True) -> Dict[str, int]:
         """
-        執行新聞爬取
+        執行新聞爬取 - 使用批量插入提高效率
         
         Args:
             max_pages: 最大爬取頁數
@@ -193,6 +193,7 @@ class BaseNewsScraper(ABC):
             Dict[str, int]: 統計資訊 {'total': 總數, 'new': 新增數, 'skipped': 跳過數, 'failed': 失敗數}
         """
         stats = {'total': 0, 'new': 0, 'skipped': 0, 'failed': 0}
+        collected_news = []  # 收集所有新聞資料，準備批量插入
         
         self.logger.info(f"開始爬取 {self.news_source} 新聞，最多 {max_pages} 頁")
         
@@ -244,12 +245,11 @@ class BaseNewsScraper(ABC):
                         merged_data['news_id'] = news_id
                         merged_data['url'] = news_url
                         
-                        # 儲存到資料庫
-                        if self._save_news_to_db(merged_data):
-                            stats['new'] += 1
-                            self.logger.info(f"成功爬取新聞: {merged_data.get('title', 'Unknown')[:50]}")
-                        else:
-                            stats['failed'] += 1
+                        # 轉換為資料庫格式並收集
+                        db_data = self._convert_to_db_format(merged_data)
+                        collected_news.append(db_data)
+                        
+                        self.logger.debug(f"收集新聞: {merged_data.get('title', 'Unknown')[:50]}")
                         
                         # 隨機延遲
                         self._random_delay()
@@ -264,6 +264,17 @@ class BaseNewsScraper(ABC):
                     
             except Exception as e:
                 self.logger.error(f"爬取第 {page} 頁時發生錯誤: {e}")
+        
+        # 批量插入收集到的新聞
+        if collected_news:
+            self.logger.info(f"開始批量插入 {len(collected_news)} 條新聞到資料庫")
+            try:
+                inserted_count = self.db.insert_news_batch(collected_news)
+                stats['new'] = inserted_count
+                self.logger.info(f"批量插入完成 - 成功插入 {inserted_count} 條新聞")
+            except Exception as e:
+                self.logger.error(f"批量插入失敗: {e}")
+                stats['failed'] += len(collected_news)
         
         self.logger.info(f"爬取完成 - 總計: {stats['total']}, 新增: {stats['new']}, 跳過: {stats['skipped']}, 失敗: {stats['failed']}")
         return stats

@@ -64,7 +64,72 @@ class NewsORMDatabase:
     
     def insert_news_batch(self, news_items: List[Dict[str, Any]]) -> int:
         """
-        批量插入新聞記錄
+        高效率批量插入新聞記錄
+        
+        Args:
+            news_items: 新聞資料列表
+            
+        Returns:
+            int: 成功插入的數量
+        """
+        if not news_items:
+            return 0
+            
+        insert_count = 0
+        
+        try:
+            with get_db_session() as session:
+                # 批量檢查已存在的新聞ID
+                existing_pairs = set()
+                if news_items:
+                    # 獲取所有需要檢查的 (news_source, news_id) 對
+                    check_pairs = [(item.get('news_source'), item.get('news_id')) for item in news_items]
+                    
+                    # 批量查詢已存在的記錄
+                    existing_query = session.query(News.news_source, News.news_id).filter(
+                        and_(
+                            News.news_source.in_([pair[0] for pair in check_pairs]),
+                            News.news_id.in_([pair[1] for pair in check_pairs])
+                        )
+                    ).all()
+                    
+                    existing_pairs = {(row.news_source, row.news_id) for row in existing_query}
+                
+                # 過濾出需要插入的新聞
+                news_to_insert = []
+                for item in news_items:
+                    pair = (item.get('news_source'), item.get('news_id'))
+                    if pair not in existing_pairs:
+                        news = News(
+                            news_id=item.get('news_id'),
+                            news_source=item.get('news_source'),
+                            author=item.get('author', ''),
+                            title=item.get('title', ''),
+                            url=item.get('url', ''),
+                            publish_time=item.get('publish_time', '')
+                        )
+                        news_to_insert.append(news)
+                
+                # 批量插入
+                if news_to_insert:
+                    session.add_all(news_to_insert)
+                    session.commit()
+                    insert_count = len(news_to_insert)
+                    print(f"批量插入成功: {insert_count} 條新聞")
+                else:
+                    print("沒有需要插入的新聞（全部已存在）")
+        
+        except Exception as e:
+            print(f"批量插入新聞失敗: {e}")
+            # 如果批量插入失敗，回退到逐一插入
+            print("回退到逐一插入模式...")
+            return self._insert_news_one_by_one(news_items)
+        
+        return insert_count
+    
+    def _insert_news_one_by_one(self, news_items: List[Dict[str, Any]]) -> int:
+        """
+        逐一插入新聞記錄（作為批量插入的備用方案）
         
         Args:
             news_items: 新聞資料列表
@@ -74,32 +139,13 @@ class NewsORMDatabase:
         """
         insert_count = 0
         
-        with get_db_session() as session:
-            for item in news_items:
-                try:
-                    # 檢查是否已存在
-                    existing = session.query(News).filter(
-                        and_(
-                            News.news_source == item.get('news_source'),
-                            News.news_id == item.get('news_id')
-                        )
-                    ).first()
-                    
-                    if not existing:
-                        news = News(
-                            news_id=item.get('news_id'),
-                            news_source=item.get('news_source'),
-                            author=item.get('author', ''),
-                            title=item.get('title', ''),
-                            url=item.get('url', ''),
-                            publish_time=item.get('publish_time', '')
-                        )
-                        session.add(news)
-                        insert_count += 1
-                        
-                except Exception as e:
-                    print(f"插入單筆新聞失敗: {e} - 標題: {item.get('title', 'unknown')}")
-                    continue
+        for item in news_items:
+            try:
+                if self.insert_news_item(item):
+                    insert_count += 1
+            except Exception as e:
+                print(f"插入單筆新聞失敗: {e} - 標題: {item.get('title', 'unknown')}")
+                continue
         
         return insert_count
     
