@@ -10,8 +10,8 @@ import random
 from datetime import datetime
 import logging
 
-# 導入 ORM 資料庫管理
-from news_orm_db import news_orm_db
+# 導入 資料庫工廠
+from db.database_factory import get_database
 
 
 class BaseNewsScraper(ABC):
@@ -46,7 +46,7 @@ class BaseNewsScraper(ABC):
         self.delay_range = (1, 3)
         
         # 初始化資料庫
-        self.db = news_orm_db
+        self.db = get_database()
     
     def _get_page_content(self, url: str) -> Optional[BeautifulSoup]:
         """

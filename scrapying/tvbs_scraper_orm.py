@@ -8,6 +8,7 @@ import os
 import json
 import aiohttp
 import asyncio
+import pytz
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 from bs4 import BeautifulSoup
@@ -29,6 +30,38 @@ class TVBSScraper(BaseNewsScraper):
         )
         self.api_url = "https://news.tvbs.com.tw/news/get_breaking_news_other_cate"
         self.current_payload = None
+        self.taipei_tz = pytz.timezone('Asia/Taipei')
+        self.today = datetime.now(self.taipei_tz).date()  # 改為當天
+    
+    def is_today_news(self, date_str: str) -> bool:
+        """檢查給定的日期字串是否為今天的新聞"""
+        try:
+            # 嘗試多種日期格式
+            date_formats = [
+                "%Y/%m/%d %H:%M",      # TVBS 新聞詳情頁格式: 2023/03/07 11:39
+                "%Y-%m-%d %H:%M:%S",   # API 回傳格式: 2025-08-27 09:46:13
+                "%Y/%m/%d %H:%M:%S"    # 有秒數的格式
+            ]
+            
+            news_date = None
+            for date_format in date_formats:
+                try:
+                    news_date = datetime.strptime(date_str, date_format)
+                    break
+                except ValueError:
+                    continue
+            
+            if news_date is None:
+                self.logger.warning(f"無法解析日期格式: {date_str}")
+                return False
+                
+            # 只比較日期，不比較時間
+            return news_date.date() == self.today
+            
+        except Exception as e:
+            # 如果無法解析日期，回傳 False 以停止抓取
+            self.logger.warning(f"日期檢查出錯: {date_str}, 錯誤: {e}")
+            return False
     
     
     def _extract_payload_from_soup(self, soup: BeautifulSoup) -> Dict[str, str]:
@@ -231,6 +264,144 @@ class TVBSScraper(BaseNewsScraper):
         except Exception as e:
             self.logger.warning(f"日期格式化失敗: {date_str}, 錯誤: {e}")
             return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
+    def scrape_news(self, max_pages: int = 1, skip_existing: bool = True) -> Dict[str, int]:
+        """
+        覆寫基類方法，加入時間檢查邏輯（基於舊版 tvbs/main.py）
+        """
+        stats = {'total': 0, 'new': 0, 'skipped': 0, 'failed': 0}
+        collected_news = []
+        
+        self.logger.info(f"開始爬取 {self.news_source} 新聞，限制在今天 ({self.today}) 內")
+        
+        try:
+            # 1. 首先獲取主頁面
+            main_soup = self._get_page_content(self.base_url)
+            if not main_soup:
+                self.logger.error("無法獲取主頁面")
+                return stats
+            
+            # 2. 提取初始新聞列表
+            initial_news = self._get_news_list(main_soup)
+            all_hrefs = set()
+            
+            # 收集初始新聞連結
+            for news in initial_news:
+                if news.get('url'):
+                    href = news['url'].replace("https://news.tvbs.com.tw", "")
+                    all_hrefs.add(href)
+            
+            # 3. 使用API獲取更多新聞（基於舊版邏輯）
+            if self.current_payload:
+                date_str = self.current_payload.get('date', '')
+                
+                # 使用 while 循環檢查時間，但改為檢查今天的新聞
+                while self.is_today_news(date_str):
+                    self.logger.info(f"正在獲取更多新聞，當前日期: {date_str}")
+                    
+                    try:
+                        # 使用同步版本的 API 調用
+                        response = self.session.get(self.api_url, params=self.current_payload)
+                        if response.status_code == 200:
+                            api_data = response.json()
+                            
+                            if 'breaking_news_other' in api_data:
+                                # 解析新聞連結
+                                api_soup = BeautifulSoup(api_data['breaking_news_other'], 'html.parser')
+                                links = api_soup.find_all('a', href=True)
+                                
+                                for a in links:
+                                    href = a.get('href')
+                                    if href and isinstance(href, str) and "/politics/" in href:
+                                        all_hrefs.add(href)
+                                
+                                # 更新 payload（基於舊版邏輯）
+                                if 'last_news_id' in api_data:
+                                    self.current_payload['news_id'] = api_data['last_news_id']
+                                if 'last_news_review_date' in api_data:
+                                    date_str = api_data['last_news_review_date']
+                                    self.current_payload['date'] = date_str
+                                if 'page' in api_data:
+                                    self.current_payload['page'] = str(int(api_data['page']) + 1)
+                            else:
+                                self.logger.info("API 沒有更多新聞")
+                                break
+                        else:
+                            self.logger.error(f"API 請求失敗: {response.status_code}")
+                            break
+                            
+                        # 避免請求過於頻繁
+                        self._random_delay()
+                        
+                    except Exception as e:
+                        self.logger.error(f"API 請求失敗: {e}")
+                        break
+            
+            self.logger.info(f"總共收集到 {len(all_hrefs)} 個新聞連結")
+            
+            # 4. 處理所有收集到的新聞連結
+            for href in all_hrefs:
+                stats['total'] += 1
+                
+                try:
+                    news_url = f"https://news.tvbs.com.tw{href}"
+                    news_id = self._extract_news_id(news_url)
+                    
+                    # 檢查是否已存在
+                    if skip_existing and self._is_news_exists(news_id):
+                        stats['skipped'] += 1
+                        continue
+                    
+                    # 獲取新聞詳情
+                    news_detail = self._get_news_detail(news_url)
+                    if not news_detail:
+                        stats['failed'] += 1
+                        continue
+                    
+                    # 檢查新聞發布時間是否為今天（就像其他爬蟲一樣）
+                    publish_time_str = news_detail.get('publish_time', '')
+                    if publish_time_str and not self.is_today_news(publish_time_str):
+                        self.logger.info(f"新聞時間不是今天，跳過: {publish_time_str}")
+                        stats['skipped'] += 1
+                        continue
+                    
+                    # 準備新聞資料
+                    merged_data = {
+                        'url': news_url,
+                        'news_id': news_id,
+                        'source': self.news_source,
+                        **news_detail
+                    }
+                    
+                    # 轉換為資料庫格式
+                    db_data = self._convert_to_db_format(merged_data)
+                    collected_news.append(db_data)
+                    
+                    self.logger.info(f"收集新聞: {news_detail.get('title', 'Unknown')[:50]}")
+                    
+                    # 隨機延遲
+                    self._random_delay()
+                    
+                except Exception as e:
+                    stats['failed'] += 1
+                    self.logger.error(f"處理新聞時發生錯誤: {e}")
+            
+            # 5. 批量插入收集到的新聞
+            if collected_news:
+                self.logger.info(f"開始批量插入 {len(collected_news)} 條新聞到資料庫")
+                try:
+                    inserted_count = self.db.insert_news_batch(collected_news)
+                    stats['new'] = inserted_count
+                    self.logger.info(f"批量插入完成 - 成功插入 {inserted_count} 條新聞")
+                except Exception as e:
+                    self.logger.error(f"批量插入失敗: {e}")
+                    stats['failed'] += len(collected_news)
+            
+        except Exception as e:
+            self.logger.error(f"爬取過程中發生錯誤: {e}")
+        
+        self.logger.info(f"爬取完成 - 總計: {stats['total']}, 新增: {stats['new']}, 跳過: {stats['skipped']}, 失敗: {stats['failed']}")
+        return stats
 
 
 def test_tvbs_scraper():

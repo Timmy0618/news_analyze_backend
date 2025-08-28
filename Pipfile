@@ -19,6 +19,8 @@ fastapi = "*"
 uvicorn = "*"
 schedule = "*"
 pydantic = "*"
+pymongo = "*"
+mongoengine = "*"
 
 [dev-packages]
 

@@ -8,14 +8,14 @@
 - **批量資料處理**: 高效率的批量插入，提升資料庫操作效能
 - **RESTful API**: 提供完整的新聞查詢 API 服務
 - **自動排程器**: 支援定時自動執行爬蟲任務
-- **資料庫支援**: 同時支援 PostgreSQL 和 SQLite
+- **資料庫支援**: 支援 MongoDB 8、PostgreSQL 和 SQLite，可動態切換
 - **ORM 架構**: 使用 SQLAlchemy ORM 確保資料一致性
 
 ## 🛠 技術架構
 
 - **後端框架**: FastAPI
-- **資料庫**: PostgreSQL / SQLite (可配置)
-- **ORM**: SQLAlchemy
+- **資料庫**: MongoDB 8 / PostgreSQL / SQLite (可配置切換)
+- **ORM**: MongoEngine (MongoDB) / SQLAlchemy (關聯式資料庫)
 - **爬蟲**: requests + BeautifulSoup
 - **排程器**: asyncio
 - **依賴管理**: pipenv
@@ -27,7 +27,24 @@
 - Python 3.8+
 - pipenv
 
-### 2. 專案設定
+### 2. 資料庫設定
+
+#### MongoDB 8 (推薦)
+
+```bash
+# 啟動 MongoDB 和 Mongo Express 管理介面
+docker-compose up -d mongodb mongo-express
+
+# Mongo Express 將可在 http://localhost:8081 訪問
+# 預設帳號: admin / admin_password_2024
+```
+
+#### PostgreSQL (可選)
+
+```bash
+# 啟動 PostgreSQL 和 PgAdmin 管理介面
+docker-compose --profile postgres up -d postgres pgadmin
+```
 
 ```bash
 # 克隆專案
@@ -41,20 +58,44 @@ pipenv install
 pipenv shell
 ```
 
-### 3. 環境變數配置
+### 3. 專案設定
+
+```bash
+# 克隆專案
+git clone https://github.com/Timmy0618/news_analyze.git
+cd news_analyze
+
+# 安裝依賴
+pipenv install
+
+# 進入虛擬環境
+pipenv shell
+```
+
+### 4. 環境變數配置
 
 創建 `.env` 文件並設定以下變數：
 
 ```env
-# 資料庫配置
-DATABASE_TYPE=postgresql  # 或 sqlite
+# 資料庫配置 (選擇其中一種)
+DATABASE_TYPE=mongodb     # 或 postgresql、sqlite
+
+# MongoDB 8 配置 (推薦)
+MONGODB_HOST=localhost
+MONGODB_PORT=27017
+MONGODB_DATABASE=news_analyze
+MONGODB_USER=news_user
+MONGODB_PASSWORD=news_password_2024
+MONGODB_CONNECTION_STRING=mongodb://news_user:news_password_2024@localhost:27017/news_analyze
+
+# PostgreSQL 配置 (保留以供切換)
 POSTGRES_HOST=localhost
 POSTGRES_PORT=5432
 POSTGRES_DATABASE=news_analyze
 POSTGRES_USER=news_user
 POSTGRES_PASSWORD=news_password_2024
 
-# SQLite 配置（當 DATABASE_TYPE=sqlite 時）
+# SQLite 配置 (當 DATABASE_TYPE=sqlite 時)
 SQLITE_DB_PATH=./news.db
 
 # 排程器配置
@@ -167,40 +208,58 @@ news_analyze/
 │   ├── __init__.py
 │   ├── app.py             # FastAPI 應用主檔案
 │   └── scheduler.py       # 分離的排程器模組
+├── db/                    # 資料庫相關檔案
+│   ├── __init__.py
+│   ├── database_factory.py    # 資料庫工廠模式
+│   ├── models_mongodb.py      # MongoDB 模型
+│   ├── database_mongodb.py    # MongoDB 連線設定
+│   ├── news_mongodb.py        # MongoDB 資料操作
+│   ├── models.py              # SQLAlchemy 模型
+│   ├── database_orm.py        # SQLAlchemy 連線設定
+│   └── news_orm_db.py         # SQLAlchemy 資料操作
 ├── scrapying/             # 爬蟲模組
 │   ├── setn_new.py        # SETN 爬蟲 (ORM 版本)
 │   ├── ltn_scraper_orm.py # LTN 爬蟲 (ORM 版本)
 │   ├── tvbs_scraper_orm.py # TVBS 爬蟲 (ORM 版本)
 │   └── chinatimes_scraper_orm.py # 中國時報爬蟲 (ORM 版本)
+├── docker/                # Docker 相關檔案
+│   └── mongodb-init.js    # MongoDB 初始化腳本
 ├── base_scraper_orm.py    # 爬蟲基礎類別
 ├── unified_manager_orm.py # 統一爬蟲管理器
-├── news_orm_db.py        # ORM 資料庫管理
-├── database_orm.py       # 資料庫連線設定
-├── models.py             # SQLAlchemy 模型
 ├── main.py               # 主程式入口
-├── requirements.txt      # Python 依賴列表
+├── docker-compose.yml    # Docker 服務配置
 ├── Pipfile              # pipenv 配置
 └── README.md            # 本說明文件
 ```
 
 ### 核心元件
 
-1. **基礎爬蟲類別** (`base_scraper_orm.py`)
+1. **資料庫工廠模式** (`db/database_factory.py`)
+   - 根據配置動態選擇資料庫實現
+   - 支援 MongoDB、PostgreSQL、SQLite 無縫切換
+   - 統一的資料操作介面
+
+2. **MongoDB 支援** (`db/models_mongodb.py`, `db/news_mongodb.py`)
+   - MongoEngine ODM 整合
+   - 高效能批量插入
+   - 靈活的文件結構
+
+3. **基礎爬蟲類別** (`base_scraper_orm.py`)
    - 提供統一的爬蟲介面
    - 支援批量資料插入
    - 錯誤處理與重試機制
 
-2. **統一管理器** (`unified_manager_orm.py`)
+4. **統一管理器** (`unified_manager_orm.py`)
    - 並行執行多個爬蟲
    - 統計資訊彙整
    - 資料庫狀態監控
 
-3. **API 服務** (`api/app.py`)
+5. **API 服務** (`api/app.py`)
    - RESTful API 端點
    - 自動文檔生成
    - 資料驗證與序列化
 
-4. **排程器** (`api/scheduler.py`)
+6. **排程器** (`api/scheduler.py`)
    - 定時執行爬蟲任務
    - 異步任務管理
    - 狀態監控

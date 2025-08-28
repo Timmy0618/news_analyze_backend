@@ -5,8 +5,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_
 from typing import List, Dict, Any, Optional
-from models import News
-from database_orm import get_db_session, init_database
+from .models import News
+from .database_orm import get_db_session, init_database
 
 
 class NewsORMDatabase:
