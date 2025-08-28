@@ -11,6 +11,14 @@ pytz = "*"
 brotli = "*"
 cloudscraper = "*"
 selenium = "*"
+sqlalchemy = "*"
+alembic = "*"
+python-dotenv = "*"
+psycopg2-binary = "*"
+fastapi = "*"
+uvicorn = "*"
+schedule = "*"
+pydantic = "*"
 
 [dev-packages]
 
