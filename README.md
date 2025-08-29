@@ -218,13 +218,14 @@ news_analyze/
 │   ├── database_orm.py        # SQLAlchemy 連線設定
 │   └── news_orm_db.py         # SQLAlchemy 資料操作
 ├── scrapying/             # 爬蟲模組
+│   ├── __init__.py        # 套件初始化
+│   ├── base_scraper_orm.py# 爬蟲基礎類別
 │   ├── setn_new.py        # SETN 爬蟲 (ORM 版本)
 │   ├── ltn_scraper_orm.py # LTN 爬蟲 (ORM 版本)
 │   ├── tvbs_scraper_orm.py # TVBS 爬蟲 (ORM 版本)
 │   └── chinatimes_scraper_orm.py # 中國時報爬蟲 (ORM 版本)
 ├── docker/                # Docker 相關檔案
 │   └── mongodb-init.js    # MongoDB 初始化腳本
-├── base_scraper_orm.py    # 爬蟲基礎類別
 ├── unified_manager_orm.py # 統一爬蟲管理器
 ├── main.py               # 主程式入口
 ├── docker-compose.yml    # Docker 服務配置
@@ -244,7 +245,7 @@ news_analyze/
    - 高效能批量插入
    - 靈活的文件結構
 
-3. **基礎爬蟲類別** (`base_scraper_orm.py`)
+3. **基礎爬蟲類別** (`scrapying/base_scraper_orm.py`)
    - 提供統一的爬蟲介面
    - 支援批量資料插入
    - 錯誤處理與重試機制
