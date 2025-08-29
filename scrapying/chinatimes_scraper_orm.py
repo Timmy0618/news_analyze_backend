@@ -12,7 +12,7 @@ from urllib.parse import urljoin
 
 # 添加根目錄到Python路徑
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from base_scraper_orm import BaseNewsScraper
+from .base_scraper_orm import BaseNewsScraper
 
 
 class ChinaTimesScraper(BaseNewsScraper):

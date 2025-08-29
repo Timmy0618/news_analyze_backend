@@ -10,26 +10,7 @@ from typing import List, Dict, Any, Optional
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse, parse_qs
 
-# 添加根目錄到Python路徑
-sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from base_scraper_orm import BaseNewsScraper
-
-
-"""
-SETN新聞爬蟲 - 使用ORM架構
-"""
-
-import sys
-import os
-import re
-from datetime import datetime
-from typing import List, Dict, Any, Optional
-from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlparse, parse_qs
-
-# 添加根目錄到Python路徑
-sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from base_scraper_orm import BaseNewsScraper
+from .base_scraper_orm import BaseNewsScraper
 
 
 class SETNScraper(BaseNewsScraper):
@@ -145,21 +126,24 @@ class SETNScraper(BaseNewsScraper):
         except:
             return str(hash(news_url))
     
-    def scrape_news(self, max_pages: int = 1, skip_existing: bool = True) -> Dict[str, int]:
+    def scrape_news(self, max_pages: int = 1, skip_existing: bool = True, 
+                   max_consecutive_duplicates: int = 5) -> Dict[str, int]:
         """
-        執行新聞爬取 - SETN 專用，只抓取當天新聞
+        執行新聞爬取 - SETN 專用，只抓取當天新聞，支持連續重複檢查
         
         Args:
             max_pages: 最大爬取頁數
             skip_existing: 是否跳過已存在的新聞
+            max_consecutive_duplicates: 最大連續重複新聞數量，超過時停止爬取
             
         Returns:
             Dict[str, int]: 統計資訊 {'total': 總數, 'new': 新增數, 'skipped': 跳過數, 'failed': 失敗數}
         """
         stats = {'total': 0, 'new': 0, 'skipped': 0, 'failed': 0}
         collected_news = []  # 收集所有新聞資料，準備批量插入
+        consecutive_duplicates = 0  # 連續重複計數器
         
-        self.logger.info(f"開始爬取 {self.news_source} 新聞（只抓取當天），最多 {max_pages} 頁")
+        self.logger.info(f"開始爬取 {self.news_source} 新聞（只抓取當天），最多 {max_pages} 頁，最大連續重複: {max_consecutive_duplicates}")
         
         for page in range(1, max_pages + 1):
             try:
@@ -180,6 +164,8 @@ class SETNScraper(BaseNewsScraper):
                 if not news_list:
                     self.logger.warning(f"第 {page} 頁沒有找到新聞")
                     break
+                
+                page_new_news = 0  # 當前頁面新增的新聞數
                 
                 # 處理每條新聞
                 for news_item in news_list:
@@ -202,8 +188,18 @@ class SETNScraper(BaseNewsScraper):
                         # 檢查是否已存在
                         if skip_existing and self._is_news_exists(news_id):
                             stats['skipped'] += 1
-                            self.logger.debug(f"跳過已存在的新聞: {news_id}")
+                            consecutive_duplicates += 1
+                            self.logger.debug(f"跳過已存在的新聞: {news_id} (連續重複: {consecutive_duplicates})")
+                            
+                            # 檢查是否超過連續重複限制
+                            if consecutive_duplicates >= max_consecutive_duplicates:
+                                self.logger.info(f"連續 {consecutive_duplicates} 條重複新聞，停止爬取")
+                                return self._finalize_scraping(stats, collected_news)
+                            
                             continue
+                        
+                        # 重置連續重複計數器（找到新新聞）
+                        consecutive_duplicates = 0
                         
                         # 獲取新聞詳細內容
                         news_detail = self._get_news_detail(news_url)
@@ -227,6 +223,7 @@ class SETNScraper(BaseNewsScraper):
                         # 轉換為資料庫格式並收集
                         db_data = self._convert_to_db_format(merged_data)
                         collected_news.append(db_data)
+                        page_new_news += 1
                         
                         self.logger.debug(f"收集新聞: {merged_data.get('title', 'Unknown')[:50]}")
                         
@@ -237,23 +234,17 @@ class SETNScraper(BaseNewsScraper):
                         stats['failed'] += 1
                         self.logger.error(f"處理新聞時發生錯誤: {e}")
                 
+                # 頁面統計日誌
+                if page_new_news > 0:
+                    self.logger.info(f"第 {page} 頁新增 {page_new_news} 條新新聞")
+                else:
+                    self.logger.info(f"第 {page} 頁沒有新增新聞")
+                
             except Exception as e:
                 self.logger.error(f"處理第 {page} 頁時發生錯誤: {e}")
                 continue
         
-        # 批量插入收集到的新聞
-        if collected_news:
-            try:
-                inserted_count = self.db.insert_news_batch(collected_news)
-                stats['new'] = inserted_count
-                self.logger.info(f"批量插入完成：成功插入 {inserted_count} 條新聞")
-            except Exception as e:
-                self.logger.error(f"批量插入新聞失敗: {e}")
-                stats['failed'] += len(collected_news)
-                stats['new'] = 0
-        
-        self.logger.info(f"爬取完成 - 總計: {stats['total']}, 新增: {stats['new']}, 跳過: {stats['skipped']}, 失敗: {stats['failed']}")
-        return stats
+        return self._finalize_scraping(stats, collected_news)
 
     def _should_process_news(self, news_data: Dict[str, Any]) -> bool:
         """

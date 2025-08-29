@@ -16,7 +16,7 @@ from urllib.parse import urljoin
 
 # 添加根目錄到Python路徑
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from base_scraper_orm import BaseNewsScraper
+from .base_scraper_orm import BaseNewsScraper
 
 
 class TVBSScraper(BaseNewsScraper):
@@ -265,14 +265,23 @@ class TVBSScraper(BaseNewsScraper):
             self.logger.warning(f"日期格式化失敗: {date_str}, 錯誤: {e}")
             return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     
-    def scrape_news(self, max_pages: int = 1, skip_existing: bool = True) -> Dict[str, int]:
+    def _should_process_news(self, news_data: Dict[str, Any]) -> bool:
         """
-        覆寫基類方法，加入時間檢查邏輯（基於舊版 tvbs/main.py）
+        檢查是否應該處理這條新聞（TVBS 專用：只處理今天新聞）
         """
-        stats = {'total': 0, 'new': 0, 'skipped': 0, 'failed': 0}
-        collected_news = []
-        
+        publish_time = news_data.get('publish_time', '')
+        if publish_time:
+            return self.is_today_news(publish_time)
+        return True  # 如果沒有時間資訊，預設處理
+
+    def scrape_news(self, max_pages: int = 1, skip_existing: bool = True, 
+                   max_consecutive_duplicates: int = 5) -> Dict[str, int]:
+        """
+        覆寫基類方法，加入時間檢查邏輯和連續重複檢查
+        """
         self.logger.info(f"開始爬取 {self.news_source} 新聞，限制在今天 ({self.today}) 內")
+        # 調用基類方法，基類已經包含連續重複檢查邏輯
+        return super().scrape_news(max_pages, skip_existing, max_consecutive_duplicates)
         
         try:
             # 1. 首先獲取主頁面
