@@ -242,7 +242,14 @@ async def get_news(
     sort_order: str = Query("desc", description="排序方向 (asc, desc)"),
     mongo_db = Depends(get_mongo_db)
 ):
-    """獲取新聞列表 - 支持多種過濾和排序功能"""
+    """獲取新聞列表 - 支持搜尋、過濾和排序功能
+    
+    主要功能：
+    - 獲取新聞列表（分頁）
+    - 標題關鍵字搜尋（使用 search 參數）
+    - 多維度過濾（來源、作者、日期範圍）
+    - 靈活排序
+    """
     try:
         # 使用 MongoDB 查詢
         result = mongo_db.get_news_by_query(
@@ -397,63 +404,7 @@ async def get_news_sources(mongo_db = Depends(get_mongo_db)):
         logger.error(f"獲取新聞來源失敗: {e}")
         raise HTTPException(status_code=500, detail="獲取新聞來源失敗")
 
-@app.get("/news/search")
-async def search_news(
-    q: str = Query(..., description="搜尋關鍵字"),
-    page: int = Query(1, ge=1, description="頁碼"),
-    per_page: int = Query(20, ge=1, le=50, description="每頁數量"),
-    source: Optional[str] = Query(None, description="新聞來源過濾"),
-    sort_by: str = Query("create_time", description="排序欄位"),
-    sort_order: str = Query("desc", description="排序方向"),
-    mongo_db = Depends(get_mongo_db)
-):
-    """搜尋新聞"""
-    try:
-        result = mongo_db.get_news_by_query(
-            page=page,
-            per_page=per_page,
-            news_source=source,
-            search=q,
-            sort_by=sort_by,
-            sort_order=sort_order
-        )
-        
-        # 轉換為響應格式
-        news_data = []
-        for news_dict in result['data']:
-            create_time = None
-            if news_dict.get('create_time'):
-                try:
-                    if isinstance(news_dict['create_time'], str):
-                        create_time = datetime.fromisoformat(news_dict['create_time'].replace('Z', '+00:00'))
-                    else:
-                        create_time = news_dict['create_time']
-                except:
-                    create_time = None
-            
-            news_item = NewsResponse(
-                pk=news_dict.get('pk', ''),
-                news_id=news_dict.get('news_id', ''),
-                news_source=news_dict.get('news_source', ''),
-                author=news_dict.get('author'),
-                title=news_dict.get('title'),
-                url=news_dict.get('url'),
-                publish_time=news_dict.get('publish_time'),
-                create_time=create_time
-            )
-            news_data.append(news_item)
-        
-        return NewsListResponse(
-            total=result['total'],
-            page=result['page'],
-            per_page=result['per_page'],
-            pages=result['pages'],
-            data=news_data
-        )
-        
-    except Exception as e:
-        logger.error(f"搜尋新聞失敗: {e}")
-        raise HTTPException(status_code=500, detail="搜尋新聞失敗")
+
 
 @app.get("/news/{news_id}")
 async def get_news_detail(
