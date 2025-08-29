@@ -34,8 +34,12 @@ class NewsMongoDatabase:
             from .models_mongodb import News
             
             # 檢查是否已存在
-            news_source = news_data.get('news_source')
-            news_id = news_data.get('news_id')
+            news_source = news_data.get('news_source', '')
+            news_id = news_data.get('news_id', '')
+            
+            if not news_source or not news_id:
+                logger.error(f"缺少必要欄位: news_source={news_source}, news_id={news_id}")
+                return False
             
             if News.exists(news_source, news_id):
                 return False  # 已存在
@@ -193,8 +197,11 @@ class NewsMongoDatabase:
                          per_page: int = 20,
                          news_source: Optional[str] = None,
                          search: Optional[str] = None,
+                         author: Optional[str] = None,
                          start_date: Optional[str] = None,
-                         end_date: Optional[str] = None) -> Dict[str, Any]:
+                         end_date: Optional[str] = None,
+                         sort_by: str = "create_time",
+                         sort_order: str = "desc") -> Dict[str, Any]:
         """
         根據查詢條件獲取新聞
         
@@ -203,26 +210,55 @@ class NewsMongoDatabase:
             per_page: 每頁數量
             news_source: 新聞來源過濾
             search: 標題搜尋關鍵字
-            start_date: 開始日期
-            end_date: 結束日期
+            author: 作者過濾
+            start_date: 開始日期 (YYYY-MM-DD)
+            end_date: 結束日期 (YYYY-MM-DD)
+            sort_by: 排序欄位
+            sort_order: 排序方向
             
         Returns:
             Dict: 包含新聞列表和分頁資訊的字典
         """
         try:
             from .models_mongodb import News
+            from datetime import datetime
+            import re
             
             # 建構查詢條件
             query = {}
             
+            # 新聞來源過濾
             if news_source:
                 query['news_source'] = news_source
             
+            # 標題搜尋 (使用正則表達式，不區分大小寫)
             if search:
-                query['title__icontains'] = search  # MongoDB 不區分大小寫搜尋
+                query['title__iregex'] = re.escape(search)
             
-            # 日期範圍查詢需要進一步實作，因為 publish_time 是字串格式
-            # 這裡暫時跳過，可以後續根據實際需求調整
+            # 作者過濾
+            if author:
+                query['author__iregex'] = re.escape(author)
+            
+            # 日期範圍查詢
+            date_query = {}
+            if start_date:
+                try:
+                    start_datetime = datetime.strptime(start_date, '%Y-%m-%d')
+                    date_query['create_time__gte'] = start_datetime
+                except ValueError:
+                    logger.warning(f"無效的開始日期格式: {start_date}")
+            
+            if end_date:
+                try:
+                    end_datetime = datetime.strptime(end_date, '%Y-%m-%d')
+                    # 設定為當天的結束時間
+                    end_datetime = end_datetime.replace(hour=23, minute=59, second=59)
+                    date_query['create_time__lte'] = end_datetime
+                except ValueError:
+                    logger.warning(f"無效的結束日期格式: {end_date}")
+            
+            # 合併日期查詢條件
+            query.update(date_query)
             
             # 獲取總數
             total = News.objects.filter(**query).count()
@@ -231,8 +267,24 @@ class NewsMongoDatabase:
             offset = (page - 1) * per_page
             pages = (total + per_page - 1) // per_page
             
+            # 準備排序
+            sort_field = sort_by
+            if sort_order.lower() == 'desc':
+                sort_field = f'-{sort_by}'
+            
+            # 確保排序欄位有效
+            valid_sort_fields = ['create_time', 'publish_time', 'title', 'news_source', 'author']
+            base_sort_field = sort_by.lstrip('-')
+            if base_sort_field not in valid_sort_fields:
+                sort_field = '-create_time'  # 默認排序
+                logger.warning(f"無效的排序欄位: {sort_by}, 使用默認排序")
+            
             # 獲取數據
-            news_list = News.objects.filter(**query).order_by('-create_time').skip(offset).limit(per_page)
+            news_list = (News.objects
+                        .filter(**query)
+                        .order_by(sort_field)
+                        .skip(offset)
+                        .limit(per_page))
             
             return {
                 'total': total,
@@ -277,5 +329,16 @@ class NewsMongoDatabase:
             }
 
 
-# 創建全域實例
-news_mongo_db = NewsMongoDatabase()
+# 創建全域實例 - 延遲初始化
+news_mongo_db = None
+
+def get_news_mongo_db():
+    """獲取或創建 NewsMongoDatabase 實例"""
+    global news_mongo_db
+    if news_mongo_db is None:
+        try:
+            news_mongo_db = NewsMongoDatabase()
+        except Exception as e:
+            logger.error(f"創建 NewsMongoDatabase 實例失敗: {e}")
+            raise
+    return news_mongo_db

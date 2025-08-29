@@ -14,9 +14,9 @@ class DatabaseFactory:
         database_type = os.getenv('DATABASE_TYPE', 'postgresql').lower()
         
         if database_type == 'mongodb':
-            from .news_mongodb import news_mongo_db
+            from .news_mongodb import get_news_mongo_db
             print("使用 MongoDB 資料庫")
-            return news_mongo_db
+            return get_news_mongo_db()
         elif database_type == 'postgresql':
             # 保留原有的 PostgreSQL 支援
             try:

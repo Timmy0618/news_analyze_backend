@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # MongoDB 8 服務
   mongodb:
