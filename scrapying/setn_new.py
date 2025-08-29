@@ -145,8 +145,152 @@ class SETNScraper(BaseNewsScraper):
         except:
             return str(hash(news_url))
     
+    def scrape_news(self, max_pages: int = 1, skip_existing: bool = True) -> Dict[str, int]:
+        """
+        執行新聞爬取 - SETN 專用，只抓取當天新聞
+        
+        Args:
+            max_pages: 最大爬取頁數
+            skip_existing: 是否跳過已存在的新聞
+            
+        Returns:
+            Dict[str, int]: 統計資訊 {'total': 總數, 'new': 新增數, 'skipped': 跳過數, 'failed': 失敗數}
+        """
+        stats = {'total': 0, 'new': 0, 'skipped': 0, 'failed': 0}
+        collected_news = []  # 收集所有新聞資料，準備批量插入
+        
+        self.logger.info(f"開始爬取 {self.news_source} 新聞（只抓取當天），最多 {max_pages} 頁")
+        
+        for page in range(1, max_pages + 1):
+            try:
+                self.logger.info(f"正在爬取第 {page} 頁")
+                
+                # 獲取新聞列表頁面
+                page_url = self._get_page_url(page)
+                soup = self._get_page_content(page_url)
+                
+                if not soup:
+                    self.logger.error(f"無法獲取第 {page} 頁內容")
+                    continue
+                
+                # 解析新聞列表
+                news_list = self._get_news_list(soup)
+                self.logger.info(f"第 {page} 頁找到 {len(news_list)} 條新聞")
+                
+                if not news_list:
+                    self.logger.warning(f"第 {page} 頁沒有找到新聞")
+                    break
+                
+                # 處理每條新聞
+                for news_item in news_list:
+                    try:
+                        stats['total'] += 1
+                        
+                        # 先檢查時間是否為當天（SETN 特殊邏輯）
+                        if not self._should_process_news(news_item):
+                            stats['skipped'] += 1
+                            continue
+                        
+                        news_url = news_item.get('url', '')
+                        if not news_url:
+                            stats['failed'] += 1
+                            continue
+                        
+                        # 提取新聞ID
+                        news_id = self._extract_news_id(news_url)
+                        
+                        # 檢查是否已存在
+                        if skip_existing and self._is_news_exists(news_id):
+                            stats['skipped'] += 1
+                            self.logger.debug(f"跳過已存在的新聞: {news_id}")
+                            continue
+                        
+                        # 獲取新聞詳細內容
+                        news_detail = self._get_news_detail(news_url)
+                        if not news_detail:
+                            stats['failed'] += 1
+                            continue
+                        
+                        # 合併主頁面和詳細頁面的資料
+                        merged_data = news_item.copy()  # 先複製主頁面資料
+                        merged_data.update(news_detail)  # 再更新詳細頁面資料
+                        
+                        # 加上基本資訊
+                        merged_data['news_id'] = news_id
+                        merged_data['url'] = news_url
+                        
+                        # 再次檢查處理後的時間（雙重保險）
+                        if not self._should_process_news(merged_data):
+                            stats['skipped'] += 1
+                            continue
+                        
+                        # 轉換為資料庫格式並收集
+                        db_data = self._convert_to_db_format(merged_data)
+                        collected_news.append(db_data)
+                        
+                        self.logger.debug(f"收集新聞: {merged_data.get('title', 'Unknown')[:50]}")
+                        
+                        # 隨機延遲
+                        self._random_delay()
+                        
+                    except Exception as e:
+                        stats['failed'] += 1
+                        self.logger.error(f"處理新聞時發生錯誤: {e}")
+                
+            except Exception as e:
+                self.logger.error(f"處理第 {page} 頁時發生錯誤: {e}")
+                continue
+        
+        # 批量插入收集到的新聞
+        if collected_news:
+            try:
+                inserted_count = self.db.insert_news_batch(collected_news)
+                stats['new'] = inserted_count
+                self.logger.info(f"批量插入完成：成功插入 {inserted_count} 條新聞")
+            except Exception as e:
+                self.logger.error(f"批量插入新聞失敗: {e}")
+                stats['failed'] += len(collected_news)
+                stats['new'] = 0
+        
+        self.logger.info(f"爬取完成 - 總計: {stats['total']}, 新增: {stats['new']}, 跳過: {stats['skipped']}, 失敗: {stats['failed']}")
+        return stats
+
+    def _should_process_news(self, news_data: Dict[str, Any]) -> bool:
+        """
+        檢查是否應該處理這條新聞（SETN 專用：只處理當天新聞）
+        
+        Args:
+            news_data: 新聞資料
+            
+        Returns:
+            bool: True 表示處理，False 表示跳過
+        """
+        # 檢查是否是當天新聞（SETN 專用邏輯）
+        if 'publish_time' in news_data:
+            normalized_time = self._normalize_date_format(news_data['publish_time'])
+            if not self._is_today_news(normalized_time):
+                self.logger.debug(f"跳過非當天新聞: {news_data.get('title', 'Unknown')} - {normalized_time}")
+                return False
+        
+        return True
+
+    def _is_today_news(self, publish_time_str: str) -> bool:
+        """檢查新聞是否是當天的新聞"""
+        try:
+            # 解析發布時間
+            if isinstance(publish_time_str, str):
+                # 嘗試解析標準格式 YYYY-MM-DD HH:MM:SS
+                if len(publish_time_str) >= 10:
+                    news_date = datetime.strptime(publish_time_str[:10], '%Y-%m-%d').date()
+                    today = datetime.now().date()
+                    return news_date == today
+            return False
+        except Exception as e:
+            self.logger.debug(f"檢查日期失敗: {publish_time_str}, 錯誤: {e}")
+            return False
+
     def _normalize_date_format(self, date_str: str) -> str:
-        """統一日期格式"""
+        """統一日期格式，智能處理跨年問題"""
         try:
             # SETN的時間格式通常是 "12/25 15:30" 這樣的格式
             if '/' in date_str and ':' in date_str:
@@ -154,6 +298,22 @@ class SETNScraper(BaseNewsScraper):
                 if date_str.count('/') == 1:  # MM/DD HH:MM 格式
                     full_time = f"{self.current_year}/{date_str}"
                     dt = datetime.strptime(full_time, '%Y/%m/%d %H:%M')
+                    
+                    # 檢查是否是未來日期（超過當天）
+                    now = datetime.now()
+                    # 如果解析出的日期大於現在時間超過 1 天，可能是去年的新聞
+                    if dt > now and (dt - now).days > 0:
+                        # 嘗試使用上一年
+                        try:
+                            prev_year = self.current_year - 1
+                            full_time_prev = f"{prev_year}/{date_str}"
+                            dt_prev = datetime.strptime(full_time_prev, '%Y/%m/%d %H:%M')
+                            self.logger.debug(f"日期 {date_str} 可能是未來日期，調整為去年: {dt_prev}")
+                            return dt_prev.strftime('%Y-%m-%d %H:%M:%S')
+                        except:
+                            # 如果失敗，還是用原來的邏輯
+                            pass
+                    
                     return dt.strftime('%Y-%m-%d %H:%M:%S')
                 elif date_str.count('/') == 2:  # YYYY/MM/DD HH:MM 格式
                     # 替換 / 為 -

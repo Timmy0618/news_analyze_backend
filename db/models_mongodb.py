@@ -25,7 +25,10 @@ class News(Document):
             'news_source',
             'news_id',
             'create_time',
-            ('news_source', 'news_id'),  # 複合索引
+            {
+                'fields': ('news_source', 'news_id'), 
+                'unique': True
+            },  # 複合唯一索引
         ],
         'index_background': True,
     }
